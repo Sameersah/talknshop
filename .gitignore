@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+.env
+.venv
+
+# Node/React Native
+node_modules/
+yarn.lock
+package-lock.json
+.expo/
+
+# MacOS
+.DS_Store
+
+# CDK
+cdk.out/
+cdk.context.json
+
+# IDE
+.vscode/
+.idea/
