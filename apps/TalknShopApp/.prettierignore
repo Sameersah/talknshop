@@ -1,0 +1,14 @@
+node_modules/
+.expo/
+dist/
+build/
+coverage/
+*.log
+.env
+.env.local
+.env.production
+.env.staging
+*.tgz
+*.tar.gz
+.DS_Store
+Thumbs.db
