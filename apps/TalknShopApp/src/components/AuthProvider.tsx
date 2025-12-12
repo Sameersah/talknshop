@@ -13,6 +13,7 @@ interface AuthContextType {
   isLoading: boolean;
   login: (credentials: { email: string; password: string }) => Promise<void>;
   register: (userData: { email: string; password: string; name: string }) => Promise<void>;
+  demoLogin: () => Promise<void>;
   logout: () => Promise<void>;
   refreshAuth: () => Promise<void>;
 }
@@ -143,6 +144,51 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
   };
 
+  const demoLogin = async () => {
+    // DEV-only: bypass Cognito so you can demo UI + local orchestrator chat.
+    if (!__DEV__) {
+      throw new Error('Demo login is only available in development');
+    }
+
+    const now = new Date().toISOString();
+    const demoUser: User = {
+      id: 'demo_user',
+      email: 'demo@talknshop.local',
+      name: 'Demo User',
+      preferences: {
+        theme: 'dark',
+        language: 'en',
+        notifications: {
+          push: false,
+          email: false,
+          priceAlerts: false,
+          orderUpdates: false,
+        },
+        search: {
+          voiceEnabled: true,
+          imageEnabled: true,
+          defaultRetailer: 'amazon',
+          maxResults: 20,
+        },
+      },
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const tokens = {
+      accessToken: 'demo_access_token',
+      refreshToken: 'demo_refresh_token',
+      expiresAt: Date.now() + 60 * 60 * 1000,
+    };
+
+    dispatch(actions.auth.setTokens(tokens));
+    // Reuse the same shape as login/register fulfilled payload
+    dispatch({
+      type: actions.auth.login.fulfilled.type,
+      payload: { user: demoUser, tokens },
+    });
+  };
+
   const logout = async () => {
     try {
       // Clear auth state immediately
@@ -202,6 +248,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     isLoading,
     login,
     register,
+    demoLogin,
     logout,
     refreshAuth,
   };

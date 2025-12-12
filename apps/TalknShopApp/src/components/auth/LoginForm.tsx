@@ -6,7 +6,7 @@ import { router } from 'expo-router';
 
 export const LoginForm: React.FC = () => {
   const { colors, spacing, typography } = useTheme();
-  const { login, isLoading } = useAuth();
+  const { login, demoLogin, isLoading } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
@@ -35,6 +35,16 @@ export const LoginForm: React.FC = () => {
 
   const handleSignUp = () => {
     router.push('/(auth)/register');
+  };
+
+  const handleDemoLogin = async () => {
+    try {
+      await demoLogin();
+      router.replace('/(tabs)');
+    } catch (error: any) {
+      const errorMessage = error?.message || error?.toString() || 'Demo login failed.';
+      Alert.alert('Demo Login Failed', errorMessage);
+    }
   };
 
   return (
@@ -90,6 +100,24 @@ export const LoginForm: React.FC = () => {
             <Text style={styles.loginButtonText}>Sign In</Text>
           )}
         </TouchableOpacity>
+
+        {__DEV__ && (
+          <TouchableOpacity
+            style={[
+              styles.demoButton,
+              {
+                borderColor: colors.border,
+                backgroundColor: colors.surface,
+                opacity: isLoading ? 0.6 : 1,
+              },
+            ]}
+            onPress={handleDemoLogin}
+            disabled={isLoading}
+            activeOpacity={0.8}
+          >
+            <Text style={[styles.demoButtonText, { color: colors.text }]}>Demo Login (Skip Cognito)</Text>
+          </TouchableOpacity>
+        )}
 
         <View style={styles.signupContainer}>
           <Text style={[styles.signupText, { color: colors.textSecondary }]}>
@@ -147,6 +175,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  demoButton: {
+    borderRadius: 8,
+    height: 48,
+    marginBottom: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+  },
+  demoButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
   },
   signupText: {
     fontSize: 14,
