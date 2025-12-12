@@ -264,8 +264,8 @@ async def stream_workflow_events(
                     EventType.CLARIFICATION,
                     {
                         "question": output.get("clarifying_question"),
-                        "context": output.get("clarification_reason"),
-                        "suggestions": []
+                        "context": output.get("clarifying_context") or output.get("clarification_reason"),
+                        "suggestions": output.get("clarifying_suggestions") or []
                     }
                 )
                 # Clarification pauses the workflow; exit streaming loop

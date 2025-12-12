@@ -374,6 +374,45 @@ async def need_clarify(state: WorkflowState) -> WorkflowState:
                 "node_trace": state.get("node_trace", []) + ["need_clarify"],
             })
             return state
+
+        # Deterministic guardrail: require product_type + at least one meaningful constraint
+        # This prevents the LLM from proceeding too early for vague queries like "best headphones".
+        def _has_meaningful_constraint(spec: RequirementSpec) -> bool:
+            try:
+                attrs = (spec.attributes or {}) if hasattr(spec, "attributes") else {}
+                price = getattr(spec, "price", None)
+                brand_prefs = getattr(spec, "brand_preferences", None) or []
+                rating_min = getattr(spec, "rating_min", None)
+                condition = getattr(spec, "condition", None)
+
+                price_ok = bool(price and (getattr(price, "max", None) is not None or getattr(price, "min", None) is not None))
+                brand_ok = len(brand_prefs) > 0
+                rating_ok = rating_min is not None
+                condition_ok = condition is not None
+                attrs_ok = isinstance(attrs, dict) and len(attrs.keys()) > 0
+                return bool(price_ok or brand_ok or rating_ok or condition_ok or attrs_ok)
+            except Exception:
+                return False
+
+        product_type = getattr(requirement_spec, "product_type", None)
+        has_product_type = bool(product_type and str(product_type).strip())
+        has_constraint = _has_meaningful_constraint(requirement_spec)
+
+        if not has_product_type or not has_constraint:
+            missing = []
+            if not has_product_type:
+                missing.append("product type")
+            if not has_constraint:
+                missing.append("at least one constraint (budget, brand, or key feature)")
+            reason = "Missing " + " and ".join(missing)
+
+            state.update({
+                "needs_clarification": True,
+                "clarification_reason": reason,
+                "stage": WorkflowStage.CLARIFICATION,
+                "node_trace": state.get("node_trace", []) + ["need_clarify"],
+            })
+            return state
         
         # Build prompt
         prompt = NEED_CLARIFY_PROMPT.format(
@@ -460,11 +499,26 @@ async def ask_clarifying_question(state: WorkflowState) -> WorkflowState:
         )
         
         response = await llm.ainvoke([HumanMessage(content=prompt)])
-        
-        clarifying_question = response.content.strip()
+        # Prompt asks for JSON: {"question": "...", "suggestions": [...], "context": "..."}
+        raw = response.content.strip()
+        clarifying_question = raw
+        suggestions = []
+        context = None
+        try:
+            import json
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                clarifying_question = str(parsed.get("question") or raw).strip()
+                suggestions = parsed.get("suggestions") or []
+                context = parsed.get("context")
+        except Exception:
+            # If model didn't return JSON, fall back to raw text
+            pass
         
         state.update({
             "clarifying_question": clarifying_question,
+            "clarifying_suggestions": suggestions,
+            "clarifying_context": context,
             "clarification_count": state.get("clarification_count", 0) + 1,
             "stage": WorkflowStage.CLARIFICATION,
             "node_trace": state.get("node_trace", []) + ["ask_clarifying_q"],

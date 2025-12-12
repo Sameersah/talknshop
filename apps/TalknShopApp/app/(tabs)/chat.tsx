@@ -406,7 +406,10 @@ export default function ChatScreen() {
             placeholder={needsClarification ? 'Answer the question…' : 'Message…'}
             placeholderTextColor={colors.textSecondary}
             style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
-            multiline
+            multiline={false}
+            returnKeyType="send"
+            blurOnSubmit={false}
+            onSubmitEditing={send}
           />
           <TouchableOpacity
             onPress={send}
