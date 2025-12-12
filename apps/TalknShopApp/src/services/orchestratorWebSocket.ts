@@ -37,25 +37,41 @@ const toWebSocketBaseUrl = (httpBaseUrl: string): string => {
   return httpBaseUrl.startsWith('ws') ? httpBaseUrl : `ws://${httpBaseUrl}`;
 };
 
-const getOrchestratorHttpBaseUrl = (): string => {
-  // In dev, iOS Simulator can reach localhost, but physical iPhone cannot.
-  // For device testing, use Mac IP; for simulator, keep localhost.
+const buildHttpBaseCandidates = (): string[] => {
   const base = SERVICE_URLS.ORCHESTRATOR;
-  const isIosSimulator = Boolean(Constants.platform?.ios?.simulator);
-  if (__DEV__ && Platform.OS === 'ios' && !isIosSimulator) return base.replace('localhost', LOCAL_IP);
-  return base;
+  const candidates = new Set<string>();
+
+  candidates.add(base);
+
+  // Some environments behave differently for "localhost" resolution.
+  // iOS Simulator usually supports localhost, but if anything is off, 127.0.0.1 can help.
+  if (base.includes('localhost')) {
+    candidates.add(base.replace('localhost', '127.0.0.1'));
+  }
+
+  // For physical iOS devices, localhost won't work; LOCAL_IP is required.
+  // Simulator detection can be flaky in Expo Go, so include LOCAL_IP as a fallback.
+  if (__DEV__ && Platform.OS === 'ios' && base.includes('localhost') && LOCAL_IP) {
+    candidates.add(base.replace('localhost', LOCAL_IP));
+  }
+
+  return Array.from(candidates);
 };
 
 export class OrchestratorWebSocketClient {
   private ws: WebSocket | null = null;
   private url: string;
+  private urlCandidates: string[];
   private handlers: Set<OrchestratorEventHandler> = new Set();
 
   constructor(params: { sessionId: string; userId: string }) {
-    const httpBase = getOrchestratorHttpBaseUrl();
-    const wsBase = toWebSocketBaseUrl(httpBase);
     const { sessionId, userId } = params;
-    this.url = `${wsBase}/ws/chat?session_id=${encodeURIComponent(sessionId)}&user_id=${encodeURIComponent(userId)}`;
+    const httpBases = buildHttpBaseCandidates();
+    this.urlCandidates = httpBases.map((httpBase) => {
+      const wsBase = toWebSocketBaseUrl(httpBase);
+      return `${wsBase}/ws/chat?session_id=${encodeURIComponent(sessionId)}&user_id=${encodeURIComponent(userId)}`;
+    });
+    this.url = this.urlCandidates[0];
   }
 
   connect(): Promise<void> {
@@ -65,17 +81,63 @@ export class OrchestratorWebSocketClient {
           resolve();
           return;
         }
+        const tryConnect = async () => {
+          const timeoutMs = 2500;
 
-        this.ws = new WebSocket(this.url);
+          for (const candidateUrl of this.urlCandidates) {
+            try {
+              await this.connectOnce(candidateUrl, timeoutMs);
+              this.url = candidateUrl;
+              resolve();
+              return;
+            } catch (e) {
+              // Try next candidate
+              console.warn('WS connect attempt failed', candidateUrl, e);
+            }
+          }
 
-        this.ws.onopen = () => resolve();
-
-        this.ws.onerror = (event) => {
-          // React Native WebSocket error is not very detailed
-          reject(new Error(`WebSocket error: ${JSON.stringify(event)}`));
+          reject(new Error(`WebSocket error: failed to connect to any candidate URL`));
         };
 
-        this.ws.onmessage = (event) => {
+        void tryConnect();
+      } catch (e) {
+        reject(e as Error);
+      }
+    });
+  }
+
+  private connectOnce(url: string, timeoutMs: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const ws = new WebSocket(url);
+
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try {
+          ws.close();
+        } catch {
+          // ignore
+        }
+        reject(new Error(`Timeout connecting to ${url}`));
+      }, timeoutMs);
+
+      ws.onopen = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+
+        // Replace existing ws
+        if (this.ws) {
+          try {
+            this.ws.close();
+          } catch {
+            // ignore
+          }
+        }
+        this.ws = ws;
+
+        ws.onmessage = (event) => {
           try {
             const parsed: OrchestratorServerEvent = JSON.parse(String(event.data));
 
@@ -87,17 +149,32 @@ export class OrchestratorWebSocketClient {
 
             this.handlers.forEach((h) => h(parsed));
           } catch (e) {
-            // Ignore malformed messages but surface to console for debugging
             console.warn('Failed to parse WS message', e);
           }
         };
 
-        this.ws.onclose = () => {
-          this.ws = null;
+        ws.onclose = () => {
+          if (this.ws === ws) this.ws = null;
         };
-      } catch (e) {
-        reject(e as Error);
-      }
+
+        ws.onerror = () => {
+          // errors after connection will surface as disconnects; leave handling to caller
+        };
+
+        resolve();
+      };
+
+      ws.onerror = (event) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        try {
+          ws.close();
+        } catch {
+          // ignore
+        }
+        reject(new Error(`WebSocket error: ${JSON.stringify(event)}`));
+      };
     });
   }
 
