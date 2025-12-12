@@ -1,0 +1,9 @@
+Development (Design Spec)
+
+Each member of a project team should select a portion of their project and write a design specification for that subset of their project. The information in the design spec will complement information in the workbook. The design spec:
+
+Should cover a substantial functional area in your project.
+Should be an obvious individual contribution to the project.
+Should provide detail beyond the Workbook content. This can include more detailed requirements, definition of data structures, additional UI mockups, database schema, more detailed test definition (including unit and functional tests), code examples, etc.
+Should not substantially overlap the workbook content or other individual design specs for the project.
+The set of design specs for your project does not have to cover all aspects of your project.

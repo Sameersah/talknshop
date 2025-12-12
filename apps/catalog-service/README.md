@@ -1,16 +1,19 @@
-# Catalog Service
+# Catalog Service - Buyer Flow
 
-A comprehensive FastAPI service responsible for product search, discovery, and catalog management in the TalknShop application. This service integrates with multiple e-commerce platforms to provide unified product search and comparison capabilities.
+A FastAPI service responsible for **product search and discovery** in the TalknShop buyer flow. This service integrates with multiple e-commerce marketplaces to provide unified product search, comparison, and ranking capabilities.
 
-## Overview
+## 🎯 Overview
 
-The catalog service provides:
-- **Multi-Platform Search**: Search across Amazon, Walmart, Kroger, and other retailers
+The catalog service handles the **READ operations** for the buyer flow:
+- **Multi-Platform Search**: Search across eBay, Amazon, Walmart, Best Buy
+- **Product Aggregation**: Combine results from multiple marketplaces
+- **Intelligent Ranking**: Sort by price, rating, relevance
 - **Product Comparison**: Compare products across different platforms
 - **Price Tracking**: Monitor price changes and deals
 - **Product Details**: Comprehensive product information
-- **Search Optimization**: Intelligent search ranking and filtering
-- **Inventory Management**: Track product availability
+- **Fast Performance**: Synchronous search (1-3 seconds)
+
+**Note**: For seller flow (posting listings), see [seller-crosspost-service](../seller-crosspost-service/)
 
 ## Architecture
 

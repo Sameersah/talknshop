@@ -13,6 +13,11 @@ package-lock.json
 # MacOS
 .DS_Store
 
+# Office temporary files
+~$*.docx
+~$*.pptx
+~$*.xlsx
+
 # CDK
 cdk.out/
 cdk.context.json
