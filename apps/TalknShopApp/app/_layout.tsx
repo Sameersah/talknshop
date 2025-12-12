@@ -1,5 +1,6 @@
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { View } from 'react-native';
 import { Provider } from 'react-redux';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PersistGate } from 'redux-persist/integration/react';
@@ -7,6 +8,7 @@ import { store, persistor } from '@/store';
 import { ThemeProvider } from '@/components/ThemeProvider';
 import { AuthProvider } from '@/components/AuthProvider';
 import { NotificationProvider } from '@/components/NotificationProvider';
+import { useTheme } from '@/hooks/useTheme';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -18,6 +20,26 @@ const queryClient = new QueryClient({
   },
 });
 
+function RootLayoutContent() {
+  const { colors } = useTheme();
+  
+  return (
+    <View style={{ flex: 1, backgroundColor: colors.background }}>
+      <Stack
+        screenOptions={{
+          headerShown: false,
+          animation: 'slide_from_right',
+          contentStyle: { backgroundColor: colors.background },
+        }}
+      >
+        <Stack.Screen name="(tabs)" options={{ headerShown: false, contentStyle: { backgroundColor: colors.background } }} />
+        <Stack.Screen name="(auth)" options={{ headerShown: false, contentStyle: { backgroundColor: colors.background } }} />
+      </Stack>
+      <StatusBar style="light" />
+    </View>
+  );
+}
+
 export default function RootLayout() {
   return (
     <Provider store={store}>
@@ -26,16 +48,7 @@ export default function RootLayout() {
           <ThemeProvider>
             <AuthProvider>
               <NotificationProvider>
-                <Stack
-                  screenOptions={{
-                    headerShown: false,
-                    animation: 'slide_from_right',
-                  }}
-                >
-                  <Stack.Screen name="(auth)" options={{ headerShown: false }} />
-                  <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-                </Stack>
-                <StatusBar style="auto" />
+                <RootLayoutContent />
               </NotificationProvider>
             </AuthProvider>
           </ThemeProvider>

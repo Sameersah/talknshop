@@ -2,7 +2,7 @@ import { configureStore } from '@reduxjs/toolkit';
 import { persistStore, persistReducer } from 'redux-persist';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { combineReducers } from '@reduxjs/toolkit';
-import { authSlice } from './slices/authSlice';
+import { authSlice, login, register, logout, refreshTokens, forgotPassword, resetPassword } from './slices/authSlice';
 import { userSlice } from './slices/userSlice';
 import { searchSlice } from './slices/searchSlice';
 import { chatSlice } from './slices/chatSlice';
@@ -53,9 +53,17 @@ export const persistor = persistStore(store);
 export type RootState = ReturnType<typeof store.getState>;
 export type AppDispatch = typeof store.dispatch;
 
-// Actions
+// Actions - combine sync actions with async thunks
 export const actions = {
-  auth: authSlice.actions,
+  auth: {
+    ...authSlice.actions,
+    login,
+    register,
+    logout,
+    refreshTokens,
+    forgotPassword,
+    resetPassword,
+  },
   user: userSlice.actions,
   search: searchSlice.actions,
   chat: chatSlice.actions,

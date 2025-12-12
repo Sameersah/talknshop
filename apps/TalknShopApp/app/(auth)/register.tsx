@@ -1,21 +1,21 @@
 import React from 'react';
 import { View, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { LoginForm } from '@/components/auth/LoginForm';
+import { RegisterForm } from '@/components/auth/RegisterForm';
 import { AuthHeader } from '@/components/auth/AuthHeader';
 import { useTheme } from '@/hooks/useTheme';
 
-export default function LoginScreen() {
+export default function RegisterScreen() {
   const { colors } = useTheme();
   
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={styles.content}>
         <AuthHeader
-          title="Welcome Back"
-          subtitle="Sign in to your TalknShop account"
+          title="Create Account"
+          subtitle="Sign up to start shopping with TalknShop"
         />
-        <LoginForm />
+        <RegisterForm />
       </View>
     </SafeAreaView>
   );
@@ -31,3 +31,4 @@ const styles = StyleSheet.create({
     paddingTop: 40,
   },
 });
+

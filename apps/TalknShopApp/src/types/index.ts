@@ -298,6 +298,16 @@ export interface AppError {
   timestamp: string;
 }
 
+// Helper function to create AppError
+export function createAppError(code: string, message: string, details?: any): AppError {
+  return {
+    code,
+    message,
+    details,
+    timestamp: new Date().toISOString(),
+  };
+}
+
 // Notification Types
 export interface Notification {
   id: string;

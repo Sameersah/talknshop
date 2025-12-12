@@ -1,4 +1,31 @@
 import { ConfigContext, ExpoConfig } from 'expo/config';
+import * as dotenv from 'dotenv';
+import * as path from 'path';
+import * as fs from 'fs';
+
+// Load .env file from project root
+// Try multiple possible paths since __dirname might not work in all contexts
+const possiblePaths = [
+  path.resolve(process.cwd(), '.env'), // From project root
+  path.resolve(__dirname || process.cwd(), '../../.env'), // Relative to app.config.ts
+  path.resolve(process.cwd(), '../../.env'), // Fallback
+];
+
+let envPath: string | null = null;
+for (const possiblePath of possiblePaths) {
+  if (fs.existsSync(possiblePath)) {
+    envPath = possiblePath;
+    break;
+  }
+}
+
+if (envPath) {
+  dotenv.config({ path: envPath });
+  console.log(`✅ Loaded .env from ${envPath}`);
+} else {
+  console.warn(`⚠️  .env file not found. Tried: ${possiblePaths.join(', ')}`);
+  console.warn(`⚠️  Please create .env file at project root from .env.example`);
+}
 
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
@@ -60,6 +87,12 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   web: {
     // favicon: './src/assets/favicon.png', // TODO: Add favicon
     bundler: 'metro',
+    // Configure web to use localhost for development
+    build: {
+      babel: {
+        include: ['@expo/vector-icons'],
+      },
+    },
   },
   plugins: [
     'expo-router',
@@ -102,6 +135,14 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     router: {
       origin: false,
     },
+    // Environment variables loaded from root .env file
+    // These are accessible via Constants.expoConfig.extra in the app
+    // Prefer EXPO_PUBLIC_ prefix, fallback to non-prefixed version
+    COGNITO_DOMAIN: process.env.EXPO_PUBLIC_COGNITO_DOMAIN || process.env.COGNITO_DOMAIN,
+    COGNITO_USER_POOL_ID: process.env.EXPO_PUBLIC_COGNITO_USER_POOL_ID || process.env.COGNITO_USER_POOL_ID,
+    COGNITO_APP_CLIENT_ID: process.env.EXPO_PUBLIC_COGNITO_APP_CLIENT_ID || process.env.COGNITO_APP_CLIENT_ID,
+    SENTRY_DSN: process.env.EXPO_PUBLIC_SENTRY_DSN || process.env.SENTRY_DSN,
+    ANALYTICS_KEY: process.env.EXPO_PUBLIC_ANALYTICS_KEY || process.env.ANALYTICS_KEY,
     // eas: {
     //   projectId: 'your-eas-project-id', // Set this when you create an EAS project
     // },

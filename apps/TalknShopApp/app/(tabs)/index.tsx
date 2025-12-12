@@ -1,11 +1,14 @@
 import React from 'react';
-import { View, StyleSheet } from 'react-native';
+import { StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { SearchScreen } from '@/screens/SearchScreen';
+import { useTheme } from '@/hooks/useTheme';
 
 export default function HomeScreen() {
+  const { colors } = useTheme();
+  
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
       <SearchScreen />
     </SafeAreaView>
   );
@@ -14,6 +17,5 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#ffffff',
   },
 });

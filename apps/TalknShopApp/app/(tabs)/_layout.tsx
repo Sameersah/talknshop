@@ -26,6 +26,7 @@ export default function TabLayout() {
           borderTopRightRadius: 0,
         },
         headerShown: false,
+        contentStyle: { backgroundColor: colors.background }, // Ensure black background for all tab screens
       }}
     >
       <Tabs.Screen

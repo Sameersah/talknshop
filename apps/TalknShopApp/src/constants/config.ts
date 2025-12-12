@@ -1,17 +1,47 @@
 import Constants from 'expo-constants';
 
+// Get environment variables from .env file (loaded via app.config.ts)
+// All secrets must be in .env file - no hardcoded fallbacks
+const getEnvVar = (key: string, required: boolean = true): string => {
+  // Try Expo environment variables first (prefixed with EXPO_PUBLIC_)
+  const expoKey = `EXPO_PUBLIC_${key}`;
+  if (typeof process !== 'undefined' && process.env[expoKey]) {
+    const value = process.env[expoKey];
+    if (value && value.trim() !== '') {
+      return value;
+    }
+  }
+  // Try Constants.expoConfig.extra (loaded from app.config.ts)
+  const extraValue = Constants.expoConfig?.extra?.[key];
+  if (extraValue && typeof extraValue === 'string' && extraValue.trim() !== '') {
+    return extraValue;
+  }
+  // If required and not found, throw error
+  if (required) {
+    const availableKeys = Object.keys(Constants.expoConfig?.extra || {}).join(', ');
+    throw new Error(
+      `Missing required environment variable: ${key}. ` +
+      `Please set EXPO_PUBLIC_${key} in your .env file at project root. ` +
+      `Available extra keys: ${availableKeys || 'none'}`
+    );
+  }
+  return '';
+};
+
 // Environment configuration
 const ENV = {
   development: {
     API_BASE_URL: 'http://localhost:8000',
     API_VERSION: 'v1',
-    COGNITO_DOMAIN: 'talknshop-dev.auth.us-east-1.amazoncognito.com',
-    USER_POOL_ID: 'us-east-1_xxxxxxxxx',
-    APP_CLIENT_ID: 'xxxxxxxxxxxxxxxxxxxxxxxxxx',
+    // All secrets must come from .env file - no hardcoded values
+    COGNITO_DOMAIN: getEnvVar('COGNITO_DOMAIN', true),
+    USER_POOL_ID: getEnvVar('COGNITO_USER_POOL_ID', true),
+    APP_CLIENT_ID: getEnvVar('COGNITO_APP_CLIENT_ID', true),
     REDIRECT_SCHEME: 'talknshop',
-    REDIRECT_URI: 'talknshop://auth',
-    SENTRY_DSN: '',
-    ANALYTICS_KEY: '',
+    REDIRECT_URI: 'talknshop://auth', // For mobile deep link
+    REDIRECT_URI_WEB: 'http://localhost:8081', // For web/desktop
+    SENTRY_DSN: getEnvVar('SENTRY_DSN', false),
+    ANALYTICS_KEY: getEnvVar('ANALYTICS_KEY', false),
   },
   staging: {
     API_BASE_URL: 'https://api-staging.talknshop.com',
@@ -48,6 +78,19 @@ const getEnvironment = (): keyof typeof ENV => {
 
 // Export configuration
 export const config = ENV[getEnvironment()];
+
+// Get local IP for iOS device access (use your Mac's IP when testing on iPhone)
+// Update this to your Mac's IP address: ifconfig | grep "inet " | grep -v 127.0.0.1
+export const LOCAL_IP = '192.168.1.70'; // Your Mac's IP - update if it changes
+
+// Service-specific URLs (for direct service calls, bypassing orchestrator)
+// Note: Services will detect iOS platform and use LOCAL_IP automatically
+export const SERVICE_URLS = {
+  MEDIA: __DEV__ ? 'http://localhost:8001' : config.API_BASE_URL,
+  SELLER: __DEV__ ? 'http://localhost:8005' : config.API_BASE_URL,
+  MARKETPLACE: __DEV__ ? 'http://localhost:8004' : config.API_BASE_URL,
+  ORCHESTRATOR: config.API_BASE_URL, // Port 8000
+};
 
 // Feature flags
 export const FEATURES = {
@@ -114,6 +157,21 @@ export const API_ENDPOINTS = {
     UNREGISTER_TOKEN: '/notifications/unregister',
     LIST: '/notifications',
     MARK_READ: '/notifications/:id/read',
+  },
+  SELLER: {
+    LISTINGS: '/seller/listings',
+    LISTING_DETAIL: '/seller/listings/:id',
+    CREATE_LISTING: '/seller/listings',
+    UPDATE_LISTING: '/seller/listings/:id',
+    DELETE_LISTING: '/seller/listings/:id',
+  },
+  MARKETPLACE: {
+    CONNECTIONS: '/marketplace/connections',
+    CONNECT: '/marketplace/:platform/connect',
+    POST: '/marketplace/post',
+    LISTING_STATUS: '/marketplace/listings/:id/status',
+    UPDATE_LISTING: '/marketplace/listings/:id/:platform',
+    DELETE_LISTING: '/marketplace/listings/:id/:platform',
   },
 } as const;
 

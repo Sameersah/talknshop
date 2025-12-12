@@ -89,7 +89,7 @@ export const forgotPassword = createAsyncThunk(
 
 export const resetPassword = createAsyncThunk(
   'auth/resetPassword',
-  async (data: { token: string; password: string }, { rejectWithValue }) => {
+  async (data: { email: string; code: string; newPassword: string }, { rejectWithValue }) => {
     try {
       await authService.resetPassword(data);
       return null;
@@ -178,6 +178,14 @@ export const authSlice = createSlice({
       .addCase(logout.rejected, (state, action) => {
         state.isLoading = false;
         state.error = action.payload as AppError;
+        // Clear auth state even if logout fails
+        state.user = null;
+        state.isAuthenticated = false;
+        state.tokens = {
+          accessToken: null,
+          refreshToken: null,
+          expiresAt: null,
+        };
       });
 
     // Refresh tokens
@@ -235,3 +243,6 @@ export const authSlice = createSlice({
 });
 
 export const { clearError, setTokens, clearAuth } = authSlice.actions;
+
+// Async thunks are already exported above (export const login = ...)
+// No need to re-export them here

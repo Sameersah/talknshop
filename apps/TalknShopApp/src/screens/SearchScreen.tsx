@@ -7,15 +7,6 @@ import { ProductCard } from '@/components/ProductCard';
 import * as ImagePicker from 'expo-image-picker';
 import { getFeaturedProducts, searchProducts, Product } from '@/data/products';
 
-const QUICK_SUGGESTIONS = [
-  'Best headphones under $200',
-  'Gift ideas for her',
-  'Top rated laptops',
-  'Home office essentials',
-  'Fitness equipment',
-  'Kitchen gadgets',
-];
-
 const CONVERSATION_STARTERS = [
   "What's the best iPhone case?",
   'Show me running shoes',
@@ -115,7 +106,7 @@ export const SearchScreen: React.FC = () => {
       style={[styles.container, { backgroundColor: colors.background }]}
       contentContainerStyle={[
         styles.contentContainer,
-        { paddingBottom: insets.bottom + 100 }
+        { paddingBottom: insets.bottom } // Space for tab bar (60px) + safe area + extra padding
       ]}
       showsVerticalScrollIndicator={false}
     >
@@ -191,27 +182,6 @@ export const SearchScreen: React.FC = () => {
         </View>
       </View>
 
-      {/* Quick Suggestions */}
-      {!isSearching && !searchQuery.trim() && (
-        <View style={styles.suggestionsSection}>
-          <Text style={[styles.sectionTitle, { color: colors.text, ...typography.h3 }]}>
-            💡 Quick Suggestions
-          </Text>
-          <View style={styles.suggestionsGrid}>
-            {QUICK_SUGGESTIONS.map((suggestion, index) => (
-              <TouchableOpacity
-                key={index}
-                style={[styles.suggestionChip, { backgroundColor: colors.surface, borderColor: colors.border }]}
-                onPress={() => handleSuggestionPress(suggestion)}
-                activeOpacity={0.7}
-              >
-                <Text style={[styles.suggestionText, { color: colors.text }]}>{suggestion}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
-      )}
-
       {/* Conversation Starters */}
       {!isSearching && !searchQuery.trim() && (
         <View style={styles.conversationSection}>
@@ -237,7 +207,7 @@ export const SearchScreen: React.FC = () => {
 
 
       {/* Products Section */}
-      <View style={styles.productsSection}>
+      <View style={[styles.productsSection, { backgroundColor: colors.background }]}>
         <View style={styles.sectionHeader}>
           <Text style={[styles.sectionTitle, { color: colors.text, ...typography.h3 }]}>
             {isSearching && searchQuery.trim() 
@@ -267,6 +237,7 @@ export const SearchScreen: React.FC = () => {
             )}
             keyExtractor={(item) => item.id}
             scrollEnabled={false}
+            style={{ backgroundColor: colors.background }}
             contentContainerStyle={styles.productsList}
           />
         ) : (
