@@ -1,5 +1,6 @@
 import { Platform } from 'react-native';
 import { LOCAL_IP, SERVICE_URLS } from '@/constants/config';
+import Constants from 'expo-constants';
 
 export type OrchestratorClientMessageType = 'message' | 'answer' | 'pong' | 'disconnect';
 export type OrchestratorServerEventType =
@@ -37,10 +38,11 @@ const toWebSocketBaseUrl = (httpBaseUrl: string): string => {
 };
 
 const getOrchestratorHttpBaseUrl = (): string => {
-  // In dev, simulator can reach localhost, but physical iPhone cannot.
-  // Using Mac IP works for both simulator + device, so we always prefer it on iOS in dev.
+  // In dev, iOS Simulator can reach localhost, but physical iPhone cannot.
+  // For device testing, use Mac IP; for simulator, keep localhost.
   const base = SERVICE_URLS.ORCHESTRATOR;
-  if (__DEV__ && Platform.OS === 'ios') return base.replace('localhost', LOCAL_IP);
+  const isIosSimulator = Boolean(Constants.platform?.ios?.simulator);
+  if (__DEV__ && Platform.OS === 'ios' && !isIosSimulator) return base.replace('localhost', LOCAL_IP);
   return base;
 };
 
