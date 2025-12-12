@@ -18,6 +18,13 @@ export default function ChatScreen() {
   const [needsClarification, setNeedsClarification] = useState(false);
 
   const scrollRef = useRef<ScrollView | null>(null);
+  const idCounterRef = useRef(0);
+
+  const nextId = (prefix: 'sys' | 'u' | 'a') => {
+    // Date.now() alone can collide when multiple events arrive in the same millisecond
+    const n = idCounterRef.current++;
+    return `${prefix}_${Date.now()}_${n}`;
+  };
 
   const userId = useMemo(() => {
     // Orchestrator requires a user_id query param; for demo we can use email or fallback.
@@ -32,15 +39,15 @@ export default function ChatScreen() {
   const clientRef = useRef<OrchestratorWebSocketClient | null>(null);
 
   const appendSystem = (text: string) => {
-    setMessages((prev) => [...prev, { id: `sys_${Date.now()}`, role: 'system', text }]);
+    setMessages((prev) => [...prev, { id: nextId('sys'), role: 'system', text }]);
   };
 
   const appendUser = (text: string) => {
-    setMessages((prev) => [...prev, { id: `u_${Date.now()}`, role: 'user', text }]);
+    setMessages((prev) => [...prev, { id: nextId('u'), role: 'user', text }]);
   };
 
   const appendAssistant = (text: string) => {
-    setMessages((prev) => [...prev, { id: `a_${Date.now()}`, role: 'assistant', text }]);
+    setMessages((prev) => [...prev, { id: nextId('a'), role: 'assistant', text }]);
   };
 
   const connect = async () => {
