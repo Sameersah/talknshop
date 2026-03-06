@@ -505,6 +505,7 @@ cdk deploy --all
 - [ ] Advanced analytics dashboard
 - [ ] Multi-language support
 - [ ] Mobile app (iOS + Android)
+- [ ] **ASL input (accessibility):** American Sign Language video input — see [ASL Integration Technical Design](ASL_INTEGRATION_TECHNICAL_DESIGN.md).
 
 ---
 
