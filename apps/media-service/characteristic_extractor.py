@@ -64,11 +64,12 @@ class CharacteristicExtractor:
         self.ollama_model = ollama_model
         self.ollama_host = ollama_host
         self.ollama_available = OLLAMA_AVAILABLE
-        
-        if self.ollama_available:
+        self._ollama_client = ollama.Client(host=self.ollama_host) if OLLAMA_AVAILABLE else None
+
+        if self.ollama_available and self._ollama_client:
             try:
-                # Test Ollama connection
-                models = ollama.list()
+                # Test Ollama connection (use explicit host for Docker: host.docker.internal)
+                models = self._ollama_client.list()
                 logger.info(f"Ollama connected successfully with {len(models.models)} models")
             except Exception as e:
                 logger.warning(f"Ollama connection failed: {e}")
@@ -259,6 +260,39 @@ class CharacteristicExtractor:
                         serializable['objects'].append(str(obj))
         
         return serializable
+
+    async def get_product_description_vision(self, image_base64: str) -> Optional[str]:
+        """
+        Lightweight vision call: ask Ollama for a short product/clothing description.
+        Used in the main extract-image-attributes flow to get specific terms (e.g. bomber jacket).
+        Returns None if Ollama unavailable or on error.
+        """
+        if not self.ollama_available:
+            return None
+        prompt = """What is the main clothing item or product visible in this image? Reply with only a few specific words, e.g. bomber jacket, denim jacket, sneakers, hoodie. No full sentences."""
+        try:
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: self._ollama_client.chat(
+                    model=self.ollama_model,
+                    messages=[{
+                        "role": "user",
+                        "content": prompt,
+                        "images": [image_base64],
+                    }],
+                    options={"temperature": 0.2, "num_predict": 80},
+                ),
+            )
+            if response and getattr(response, "message", None) and getattr(response.message, "content", None):
+                text = response.message.content.strip()
+                if text and len(text) < 200:
+                    logger.info("Ollama vision product description: %s", text[:80])
+                    return text
+            return None
+        except Exception as e:
+            logger.warning("Ollama get_product_description_vision failed: %s", e)
+            return None
     
     async def extract_characteristics_with_llm(
         self, 
@@ -293,8 +327,8 @@ Provide ONLY keywords and short phrases, not long descriptions. Format as:
 Keep responses SHORT and KEYWORD-FOCUSED. Use commas to separate multiple values.
 """
             
-            # Get Ollama response with image
-            response = ollama.chat(
+            # Get Ollama response with image (use client with configured host for Docker)
+            response = self._ollama_client.chat(
                 model=self.ollama_model,
                 messages=[{
                     'role': 'user',
@@ -650,11 +684,12 @@ class AudioCharacteristicExtractor:
         self.ollama_model = ollama_model
         self.ollama_host = ollama_host
         self.ollama_available = OLLAMA_AVAILABLE
-        
-        if self.ollama_available:
+        self._ollama_client = ollama.Client(host=self.ollama_host) if OLLAMA_AVAILABLE else None
+
+        if self.ollama_available and self._ollama_client:
             try:
-                # Test Ollama connection
-                models = ollama.list()
+                # Test Ollama connection (use explicit host for Docker)
+                models = self._ollama_client.list()
                 logger.info(f"Audio Ollama connected successfully with {len(models.models)} models")
             except Exception as e:
                 logger.warning(f"Audio Ollama connection failed: {e}")
@@ -732,7 +767,7 @@ Extract the following characteristics:
 Return the characteristics in a structured format.
 """
             
-            response = ollama.chat(
+            response = self._ollama_client.chat(
                 model=self.ollama_model,
                 messages=[{
                     'role': 'user',

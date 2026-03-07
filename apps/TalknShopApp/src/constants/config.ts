@@ -149,8 +149,8 @@ export const API_ENDPOINTS = {
     CANCEL: '/orders/:id/cancel',
   },
   MEDIA: {
-    UPLOAD: '/media/upload',
-    PRESIGNED_URL: '/media/presigned-url',
+    /** Request presigned URL from orchestrator (POST). Then PUT file to returned upload_url. */
+    UPLOAD_URL: '/api/v1/media/upload-url',
   },
   NOTIFICATIONS: {
     REGISTER_TOKEN: '/notifications/register',

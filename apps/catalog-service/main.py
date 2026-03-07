@@ -79,9 +79,13 @@ async def search_products(request: SearchRequest):
         logger.info(f"Received search request: query='{request.query}'")
 
         if not rapidapi_client:
-            raise HTTPException(
-                status_code=500,
-                detail="RapidAPI key not configured. Please set RAPIDAPI_KEY in .env file.",
+            logger.warning("RAPIDAPI_KEY not set. Returning empty results. Set RAPIDAPI_KEY in .env to enable Amazon search.")
+            return SearchResponse(
+                query=request.query,
+                total_results=0,
+                page=request.pagination.page if request.pagination else 1,
+                size=0,
+                products=[],
             )
 
         # Get platforms to search (default to amazon)
@@ -105,14 +109,18 @@ async def search_products(request: SearchRequest):
                 elif request.sort_by == "price_desc":
                     rapidapi_sort = "PRICE_HIGH_TO_LOW"
 
-            amazon_results = await rapidapi_client.search_products(
-                query=request.query,
-                page=page,
-                country="US",
-                sort_by=rapidapi_sort,
-            )
-            products.extend(amazon_results)
-            logger.info(f"Found {len(amazon_results)} products from Amazon")
+            try:
+                amazon_results = await rapidapi_client.search_products(
+                    query=request.query,
+                    page=page,
+                    country="US",
+                    sort_by=rapidapi_sort,
+                )
+                products.extend(amazon_results)
+                logger.info(f"Found {len(amazon_results)} products from Amazon")
+            except Exception as e:
+                logger.warning(f"RapidAPI Amazon search failed (returning empty for Amazon): {e}")
+                # Return 200 with empty/partial results so orchestrator shows "no products" instead of error
 
         # Search Kroger if included
         if "kroger" in platforms_to_search:
@@ -225,6 +233,7 @@ async def search_products_orchestrator(payload: OrchestratorSearchRequest):
             elif val is not None:
                 query_parts.append(str(val))
     query = " ".join([p for p in query_parts if p]).strip() or rs.product_type
+    logger.info(f"Orchestrator search: product_type={rs.product_type!r} brand_preferences={rs.brand_preferences!r} -> query={query!r}")
 
     # Build filters
     price_min = rs.price.get("min") if rs.price else None
@@ -244,7 +253,13 @@ async def search_products_orchestrator(payload: OrchestratorSearchRequest):
         sort_by=None,
     )
 
-    return await search_products(search_request)
+    response = await search_products(search_request)
+    if response.total_results == 0:
+        logger.warning(
+            f"Orchestrator search returned 0 products for query={query!r}. "
+            "Check RAPIDAPI_KEY and RapidAPI response (see earlier logs)."
+        )
+    return response
 
 
 @app.get("/api/v1/products/{product_id}", response_model=Product)

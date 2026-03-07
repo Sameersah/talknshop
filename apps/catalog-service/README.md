@@ -25,6 +25,15 @@ Search Request → Catalog Service → Amazon API
                            → Aggregated Results
 ```
 
+## Test the catalog (search UI)
+
+When the catalog service is running, you can test search directly:
+
+- **Search UI**: Open **http://localhost:8002** in a browser. Use the search box to run queries (e.g. "nike shoes", "laptop") and verify results from Amazon (RapidAPI) and Kroger.
+- **API docs**: **http://localhost:8002/docs** (Swagger), **http://localhost:8002/redoc** (ReDoc).
+
+With Docker: `docker-compose up catalog-service` then visit http://localhost:8002.
+
 ## API Endpoints
 
 ### Health Check

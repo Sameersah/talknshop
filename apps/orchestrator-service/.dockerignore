@@ -1,0 +1,12 @@
+# Avoid copying local envs and docs so they don't shadow or bloat the image
+venv
+.venv
+documentation
+__pycache__
+*.pyc
+.git
+.env.local
+*.md
+.pytest_cache
+.coverage
+htmlcov

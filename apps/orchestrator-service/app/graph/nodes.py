@@ -14,7 +14,9 @@ Implements all 10 nodes for the buyer flow state machine:
 10. Done (Terminal) - Final node, return response
 """
 
+import json
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
@@ -41,6 +43,134 @@ from app.graph.prompts import (
 )
 
 logger = logging.getLogger(__name__)
+
+# UX research: 3–6 results reduce cognitive load vs 10; 6 balances choice without overwhelming
+# (e.g. Baymard, UX studies on result set size and perceived difficulty)
+TOP_N_RESULTS = 6
+
+
+def _media_type(ref: Any) -> str:
+    """Return media type string from a MediaReference or dict (e.g. 'image', 'audio', 'video')."""
+    if isinstance(ref, dict):
+        return (ref.get("media_type") or "").lower()
+    mt = getattr(ref, "media_type", None)
+    if hasattr(mt, "value"):
+        return (mt.value or "").lower()
+    return (mt or "").lower()
+
+
+def _s3_key(ref: Any) -> str:
+    """Return s3_key from a MediaReference or dict."""
+    if isinstance(ref, dict):
+        return ref.get("s3_key") or ""
+    return getattr(ref, "s3_key", "") or ""
+
+
+# Inference profile IDs (e.g. global.anthropic.claude-sonnet-4-6) use a region/scope prefix;
+# langchain_aws infers provider from the first segment, so we must pass provider explicitly.
+_INFERENCE_PROFILE_PREFIXES = ("global.", "us.", "eu.", "us-gov.", "apac.", "sa.", "amer.", "jp.", "au.")
+
+
+def _extract_json_from_llm_response(content: str) -> dict:
+    """Parse JSON from LLM response; strip markdown code fences and handle empty. Raises on failure."""
+    raw = (content or "").strip()
+    if not raw:
+        raise ValueError("LLM returned empty content")
+    # Strip ```json ... ``` or ``` ... ```
+    match = re.search(r"^```(?:json)?\s*\n?(.*?)\n?```\s*$", raw, re.DOTALL | re.IGNORECASE)
+    if match:
+        raw = match.group(1).strip()
+    if not raw:
+        raise ValueError("LLM returned no JSON inside code block")
+    return json.loads(raw)
+
+
+def _bedrock_chat_kwargs(extra_model_kwargs: dict | None = None) -> dict:
+    """Base kwargs for ChatBedrock. Sets provider='anthropic' when using an inference profile ID."""
+    model_id = settings.bedrock_model_id
+    kwargs: dict = {
+        "client": get_bedrock_client(),
+        "model_id": model_id,
+    }
+    if model_id.startswith(_INFERENCE_PROFILE_PREFIXES):
+        kwargs["provider"] = "anthropic"
+    if extra_model_kwargs:
+        kwargs["model_kwargs"] = extra_model_kwargs
+    return kwargs
+
+
+# Product types (or keywords in product_type) that are "wearable" — we ask for color if missing
+_WEARABLE_KEYWORDS = frozenset({
+    "shirt", "blouse", "tee", "t-shirt", "hoodie", "sweater", "sweatshirt", "jacket", "coat",
+    "pants", "jeans", "shorts", "dress", "skirt", "shoes", "sneakers", "boot", "sandals",
+    "hat", "cap", "bag", "backpack", "watch", "jewelry", "glasses", "sunglasses",
+    "apparel", "clothing", "wear", "footwear", "accessory", "accessories", "wearable",
+})
+
+
+def _is_wearable(product_type: str) -> bool:
+    """True if product_type describes something wearable (clothing, shoes, accessories)."""
+    if not product_type:
+        return False
+    pt = product_type.strip().lower()
+    return any(kw in pt for kw in _WEARABLE_KEYWORDS)
+
+
+def _has_color_in_spec(spec: RequirementSpec) -> bool:
+    """True if requirement spec has a color (or colour) in attributes or filters."""
+    if not spec:
+        return False
+    attrs = (getattr(spec, "attributes", None) or {}) if hasattr(spec, "attributes") else {}
+    filters = (getattr(spec, "filters", None) or {}) if hasattr(spec, "filters") else {}
+    if not isinstance(attrs, dict):
+        attrs = {}
+    if not isinstance(filters, dict):
+        filters = {}
+    for d in (attrs, filters):
+        for key in ("color", "colour", "Color", "Colour"):
+            if key in d and d[key]:
+                return True
+        for k, v in d.items():
+            if "color" in k.lower() and v:
+                return True
+    return False
+
+
+def _fallback_requirement_spec_from_message(user_message: str) -> RequirementSpec:
+    """Build a minimal RequirementSpec from user message when LLM fails. E.g. 'I want to buy nike shoes' -> shoes + nike."""
+    import re
+    from app.models.enums import MarketplaceProvider
+    msg = (user_message or "").strip().lower()
+    if not msg:
+        return RequirementSpec(
+            product_type="product",
+            attributes={},
+            filters={},
+            brand_preferences=[],
+            marketplaces=[MarketplaceProvider.AMAZON],
+        )
+    # Remove common stopwords; keep meaningful words
+    stop = {"i", "want", "to", "buy", "a", "an", "the", "some", "get", "find", "looking", "for", "need", "me"}
+    words = [w for w in re.split(r"\W+", msg) if w and w not in stop]
+    # Common brands we can detect (partial match)
+    known_brands = {"nike", "adidas", "apple", "samsung", "sony", "dell", "hp", "lenovo", "amazon", "armour"}
+    brands = [w for w in words if w in known_brands]
+    # Prefer: if we have a known brand, use it as brand and rest as product_type
+    if brands:
+        product_words = [w for w in words if w not in brands]
+        product_type = " ".join(product_words).strip() or "product"
+        brand_preferences = [b.capitalize() for b in brands[:3]]  # max 3 brands
+    else:
+        product_type = " ".join(words).strip() or "product"
+        brand_preferences = []
+    return RequirementSpec(
+        product_type=product_type[:200],
+        attributes={},
+        filters={},
+        brand_preferences=brand_preferences,
+        marketplaces=[MarketplaceProvider.AMAZON],
+    )
+
 
 # Initialize service clients
 media_client = MediaServiceClient(base_url=settings.media_service_url)
@@ -89,7 +219,12 @@ async def parse_input(state: WorkflowState) -> WorkflowState:
             "updated_at": datetime.utcnow(),
         })
         
-        logger.info(f"ParseInput: Parsed input with {len(media_refs)} media refs")
+        logger.info(
+            "ParseInput: user_message=%r media_refs=%d types=%s",
+            (user_message[:80] + "..." if len(user_message) > 80 else user_message),
+            len(media_refs),
+            [_media_type(r) for r in media_refs],
+        )
         return state
         
     except Exception as e:
@@ -124,6 +259,7 @@ async def need_media_ops(state: WorkflowState) -> WorkflowState:
         
         # Quick check: no media = no ops needed
         if not media_refs:
+            logger.info("NeedMediaOps: no media_refs, skipping media processing")
             state.update({
                 "need_stt": False,
                 "need_vision": False,
@@ -131,6 +267,17 @@ async def need_media_ops(state: WorkflowState) -> WorkflowState:
                 "node_trace": state.get("node_trace", []) + ["need_media_ops"],
             })
             return state
+        
+        # Determine which media types are present (used for routing and to gate LLM decision)
+        has_audio = any(_media_type(ref) == "audio" for ref in media_refs)
+        has_image = any(_media_type(ref) == "image" for ref in media_refs)
+        logger.info(
+            "NeedMediaOps: media_refs=%d, has_audio=%s, has_image=%s, types=%s",
+            len(media_refs),
+            has_audio,
+            has_image,
+            [_media_type(ref) for ref in media_refs],
+        )
         
         # Build prompt with media context
         media_info = format_media_info([
@@ -143,27 +290,33 @@ async def need_media_ops(state: WorkflowState) -> WorkflowState:
         )
         
         # Call Bedrock
-        llm = ChatBedrock(
-            client=get_bedrock_client(),
-            model_id=settings.bedrock_model_id,
-            model_kwargs={"temperature": 0.1, "max_tokens": 500}
-        )
+        llm = ChatBedrock(**_bedrock_chat_kwargs({"temperature": 0.1, "max_tokens": 500}))
         
         response = await llm.ainvoke([HumanMessage(content=prompt)])
-        
-        # Parse response (expecting JSON: {"need_stt": bool, "need_vision": bool})
-        import json
-        result = json.loads(response.content)
-        
+        content = (getattr(response, "content", None) or "")
+        if isinstance(content, list):
+            content = " ".join(str(c) for c in content)
+        content = str(content).strip()
+        try:
+            result = _extract_json_from_llm_response(content)
+        except Exception:
+            result = {}
+        need_stt = result.get("need_stt", False) and has_audio
+        need_vision = result.get("need_vision", False) and has_image
+        logger.info(
+            "NeedMediaOps: LLM result need_stt=%s need_vision=%s (raw: %s); after gating: need_stt=%s need_vision=%s",
+            result.get("need_stt"), result.get("need_vision"), result,
+            need_stt, need_vision,
+        )
         state.update({
-            "need_stt": result.get("need_stt", False) and has_audio,
-            "need_vision": result.get("need_vision", False) and has_image,
+            "need_stt": need_stt,
+            "need_vision": need_vision,
             "stage": WorkflowStage.MEDIA_PROCESSING,
             "node_trace": state.get("node_trace", []) + ["need_media_ops"],
             "llm_calls": state.get("llm_calls", []) + [{
                 "node": "need_media_ops",
                 "prompt": prompt[:200],
-                "response": response.content,
+                "response": content[:500] if content else "",
                 "timestamp": datetime.utcnow().isoformat()
             }]
         })
@@ -193,7 +346,7 @@ async def transcribe_audio(state: WorkflowState) -> WorkflowState:
     
     try:
         media_refs = state.get("media_refs", [])
-        audio_refs = [ref for ref in media_refs if ref.category == "AUDIO"]
+        audio_refs = [ref for ref in media_refs if _media_type(ref) == "audio"]
         
         if not audio_refs:
             logger.warning("TranscribeAudio: No audio refs found")
@@ -201,10 +354,10 @@ async def transcribe_audio(state: WorkflowState) -> WorkflowState:
         
         # Transcribe first audio file (can extend to multiple)
         audio_ref = audio_refs[0]
-        transcript = await media_client.transcribe_audio(audio_ref.s3_key)
+        transcript = await media_client.transcribe_audio(_s3_key(audio_ref))
         
         state.update({
-            "audio_transcript": transcript.get("transcript", ""),
+            "audio_transcript": getattr(transcript, "transcript", "") or "",
             "node_trace": state.get("node_trace", []) + ["transcribe_audio"],
         })
         
@@ -224,30 +377,39 @@ async def extract_image_attrs(state: WorkflowState) -> WorkflowState:
     Calls media-service to extract attributes from images.
     Only runs if need_vision == True.
     """
-    logger.info(f"ExtractImageAttrs: Extracting image attributes")
+    media_refs = state.get("media_refs", [])
+    image_refs = [ref for ref in media_refs if _media_type(ref) == "image"]
+    logger.info(
+        "ExtractImageAttrs: starting media_refs=%d image_refs=%d",
+        len(media_refs), len(image_refs),
+    )
     
     try:
-        media_refs = state.get("media_refs", [])
-        image_refs = [ref for ref in media_refs if ref.category == "IMAGE"]
-        
         if not image_refs:
-            logger.warning("ExtractImageAttrs: No image refs found")
+            logger.warning("ExtractImageAttrs: No image refs found, skipping")
             return state
         
         # Process first image (can extend to multiple)
         image_ref = image_refs[0]
-        attributes = await media_client.extract_image_attributes(image_ref.s3_key)
+        s3_key = _s3_key(image_ref)
+        logger.info("ExtractImageAttrs: calling media_client.extract_image_attributes s3_key=%s", s3_key)
+        attributes = await media_client.extract_image_attributes(s3_key)
         
         state.update({
             "image_attributes": attributes,
             "node_trace": state.get("node_trace", []) + ["extract_image_attrs"],
         })
         
-        logger.info(f"ExtractImageAttrs: Extracted {len(attributes)} attributes")
+        labels = getattr(attributes, "labels", []) or []
+        text = getattr(attributes, "text", []) or []
+        logger.info(
+            "ExtractImageAttrs: done labels_count=%d text_count=%d labels=%s",
+            len(labels), len(text), labels[:15],
+        )
         return state
         
     except Exception as e:
-        logger.error(f"ExtractImageAttrs error: {e}", exc_info=True)
+        logger.error("ExtractImageAttrs error: %s", e, exc_info=True)
         state["image_attributes"] = None
         return state
 
@@ -259,13 +421,29 @@ async def build_or_update_requirement_spec(state: WorkflowState) -> WorkflowStat
     Critical node: Uses Bedrock to extract structured RequirementSpec
     from natural language (text + media results).
     """
-    logger.info(f"BuildRequirement: Building requirement spec")
+    user_message = state.get("user_message", "")
+    audio_transcript = state.get("audio_transcript", "")
+    image_attributes_raw = state.get("image_attributes")
+    # Normalize to dict for format_image_attrs_section (may be Pydantic model)
+    image_attributes = (
+        image_attributes_raw.model_dump() if hasattr(image_attributes_raw, "model_dump") else (image_attributes_raw or {})
+    )
+    logger.info(
+        "BuildRequirement: building spec user_message=%r has_transcript=%s has_image_attrs=%s image_labels=%s",
+        (user_message[:60] + "..." if len(user_message) > 60 else user_message),
+        bool(audio_transcript),
+        bool(image_attributes),
+        (image_attributes.get("labels", [])[:10] if isinstance(image_attributes, dict) else []),
+    )
     
     try:
-        user_message = state.get("user_message", "")
-        audio_transcript = state.get("audio_transcript", "")
-        image_attributes = state.get("image_attributes", {})
         existing_spec = state.get("requirement_spec")
+        # On resume after clarification, state may lack requirement_spec; load from session so we merge
+        if not existing_spec:
+            session = await session_repo.get_session(state["session_id"])
+            if session and session.requirement_spec:
+                existing_spec = session.requirement_spec
+                state["requirement_spec"] = existing_spec
         
         if settings.use_mock_services:
             # Local mock: build a simple spec without Bedrock
@@ -276,6 +454,7 @@ async def build_or_update_requirement_spec(state: WorkflowState) -> WorkflowStat
                 filters={"price": {"max": 1000}},
                 brand_preferences=[]
             )
+            prompt = content = ""
         else:
             # Build structured prompt sections
             transcript_section = format_transcript_section(audio_transcript)
@@ -290,18 +469,23 @@ async def build_or_update_requirement_spec(state: WorkflowState) -> WorkflowStat
             )
             
             # Call Bedrock
-            llm = ChatBedrock(
-                client=get_bedrock_client(),
-                model_id=settings.bedrock_model_id,
-                model_kwargs={"temperature": 0.2, "max_tokens": 1000}
-            )
+            llm = ChatBedrock(**_bedrock_chat_kwargs({"temperature": 0.2, "max_tokens": 1000}))
             
             response = await llm.ainvoke([HumanMessage(content=prompt)])
-            
-            # Parse RequirementSpec from response
-            import json
-            spec_data = json.loads(response.content)
-            requirement_spec = RequirementSpec(**spec_data)
+            content = getattr(response, "content", None) or ""
+            if isinstance(content, list):
+                content = " ".join(str(c) for c in content)
+            content = str(content).strip()
+            if not content:
+                logger.warning("BuildRequirement: LLM returned empty content; using fallback spec")
+                requirement_spec = _fallback_requirement_spec_from_message(user_message)
+            else:
+                try:
+                    spec_data = _extract_json_from_llm_response(content)
+                    requirement_spec = RequirementSpec(**spec_data)
+                except (ValueError, json.JSONDecodeError) as parse_err:
+                    logger.warning("BuildRequirement: LLM response not valid JSON (%s); using fallback", parse_err)
+                    requirement_spec = _fallback_requirement_spec_from_message(user_message)
         
         # Save to DynamoDB
         await session_repo.save_requirement_spec(
@@ -317,7 +501,7 @@ async def build_or_update_requirement_spec(state: WorkflowState) -> WorkflowStat
             "llm_calls": state.get("llm_calls", []) + [{
                 "node": "build_requirement",
                 "prompt": prompt[:200],
-                "response": response.content,
+                "response": content[:500] if content else "",
                 "timestamp": datetime.utcnow().isoformat()
             }]
         })
@@ -327,8 +511,21 @@ async def build_or_update_requirement_spec(state: WorkflowState) -> WorkflowStat
         
     except Exception as e:
         logger.error(f"BuildRequirement error: {e}", exc_info=True)
-        state["error"] = str(e)
-        state["stage"] = WorkflowStage.FAILED
+        # Fallback: build minimal spec from user message so we can still try catalog search
+        user_message = state.get("user_message", "")
+        requirement_spec = _fallback_requirement_spec_from_message(user_message)
+        try:
+            await session_repo.save_requirement_spec(state["session_id"], requirement_spec)
+        except Exception:
+            pass
+        state.update({
+            "requirement_spec": requirement_spec,
+            "requirement_history": state.get("requirement_history", []) + [requirement_spec],
+            "stage": WorkflowStage.REQUIREMENT_BUILDING,
+            "node_trace": state.get("node_trace", []) + ["build_requirement"],
+        })
+        state.pop("error", None)
+        logger.info(f"BuildRequirement: Using fallback spec for {requirement_spec.product_type}")
         return state
 
 
@@ -398,6 +595,10 @@ async def need_clarify(state: WorkflowState) -> WorkflowState:
         has_product_type = bool(product_type and str(product_type).strip())
         has_constraint = _has_meaningful_constraint(requirement_spec)
 
+        logger.info(
+            "NeedClarify: product_type=%r has_product_type=%s has_constraint=%s",
+            product_type, has_product_type, has_constraint,
+        )
         if not has_product_type or not has_constraint:
             missing = []
             if not has_product_type:
@@ -405,7 +606,19 @@ async def need_clarify(state: WorkflowState) -> WorkflowState:
             if not has_constraint:
                 missing.append("at least one constraint (budget, brand, or key feature)")
             reason = "Missing " + " and ".join(missing)
+            logger.info("NeedClarify: requesting clarification reason=%s", reason)
+            state.update({
+                "needs_clarification": True,
+                "clarification_reason": reason,
+                "stage": WorkflowStage.CLARIFICATION,
+                "node_trace": state.get("node_trace", []) + ["need_clarify"],
+            })
+            return state
 
+        # Wearable guardrail: for clothing/shoes/accessories, require color in req context
+        if _is_wearable(str(product_type or "")) and not _has_color_in_spec(requirement_spec):
+            reason = "Color preference missing (helpful for clothing/apparel)"
+            logger.info("NeedClarify: wearable product without color, requesting clarification reason=%s", reason)
             state.update({
                 "needs_clarification": True,
                 "clarification_reason": reason,
@@ -421,18 +634,17 @@ async def need_clarify(state: WorkflowState) -> WorkflowState:
         )
         
         # Call Bedrock
-        llm = ChatBedrock(
-            client=get_bedrock_client(),
-            model_id=settings.bedrock_model_id,
-            model_kwargs={"temperature": 0.1, "max_tokens": 300}
-        )
+        llm = ChatBedrock(**_bedrock_chat_kwargs({"temperature": 0.1, "max_tokens": 300}))
         
         response = await llm.ainvoke([HumanMessage(content=prompt)])
-        
-        # Parse response: {"needs_clarification": bool, "reason": str}
-        import json
-        result = json.loads(response.content)
-        
+        content = (getattr(response, "content", None) or "")
+        if isinstance(content, list):
+            content = " ".join(str(c) for c in content)
+        content = str(content).strip()
+        try:
+            result = _extract_json_from_llm_response(content)
+        except Exception:
+            result = {}
         state.update({
             "needs_clarification": result.get("needs_clarification", False),
             "clarification_reason": result.get("reason", ""),
@@ -441,12 +653,15 @@ async def need_clarify(state: WorkflowState) -> WorkflowState:
             "llm_calls": state.get("llm_calls", []) + [{
                 "node": "need_clarify",
                 "prompt": prompt[:200],
-                "response": response.content,
+                "response": content[:500] if content else "",
                 "timestamp": datetime.utcnow().isoformat()
             }]
         })
         
-        logger.info(f"NeedClarify: needs_clarification={state['needs_clarification']}")
+        logger.info(
+            "NeedClarify: needs_clarification=%s reason=%s",
+            state["needs_clarification"], state.get("clarification_reason", ""),
+        )
         return state
         
     except Exception as e:
@@ -466,11 +681,14 @@ async def ask_clarifying_question(state: WorkflowState) -> WorkflowState:
     Generates a clarifying question and PAUSES the workflow.
     The workflow resumes when user provides an answer.
     """
-    logger.info(f"AskClarifyingQ: Generating clarifying question")
+    clarification_reason = state.get("clarification_reason", "")
+    logger.info(
+        "AskClarifyingQ: generating question clarification_reason=%s",
+        clarification_reason,
+    )
     
     try:
         requirement_spec = state.get("requirement_spec")
-        clarification_reason = state.get("clarification_reason", "")
         
         # Local mock path: craft a static question
         if settings.use_mock_services:
@@ -492,29 +710,37 @@ async def ask_clarifying_question(state: WorkflowState) -> WorkflowState:
         )
         
         # Call Bedrock
-        llm = ChatBedrock(
-            client=get_bedrock_client(),
-            model_id=settings.bedrock_model_id,
-            model_kwargs={"temperature": 0.3, "max_tokens": 200}
-        )
+        llm = ChatBedrock(**_bedrock_chat_kwargs({"temperature": 0.3, "max_tokens": 200}))
         
         response = await llm.ainvoke([HumanMessage(content=prompt)])
-        # Prompt asks for JSON: {"question": "...", "suggestions": [...], "context": "..."}
-        raw = response.content.strip()
+        raw = getattr(response, "content", None) or ""
+        if isinstance(raw, list):
+            raw = " ".join(str(c) for c in raw)
+        raw = str(raw).strip()
         clarifying_question = raw
         suggestions = []
         context = None
         try:
-            import json
-            parsed = json.loads(raw)
+            parsed = _extract_json_from_llm_response(raw)
             if isinstance(parsed, dict):
                 clarifying_question = str(parsed.get("question") or raw).strip()
                 suggestions = parsed.get("suggestions") or []
                 context = parsed.get("context")
         except Exception:
-            # If model didn't return JSON, fall back to raw text
-            pass
+            # If model didn't return JSON, fall back to raw text (strip markdown for display)
+            if raw.startswith("```"):
+                match = re.search(r"^```(?:json)?\s*\n?(.*?)\n?```\s*$", raw, re.DOTALL | re.IGNORECASE)
+                if match:
+                    try:
+                        parsed = json.loads(match.group(1).strip())
+                        if isinstance(parsed, dict) and parsed.get("question"):
+                            clarifying_question = str(parsed["question"])
+                            suggestions = parsed.get("suggestions") or []
+                            context = parsed.get("context")
+                    except Exception:
+                        pass
         
+        logger.info("AskClarifyingQ: question=%s", clarifying_question[:100] if clarifying_question else "")
         state.update({
             "clarifying_question": clarifying_question,
             "clarifying_suggestions": suggestions,
@@ -525,7 +751,7 @@ async def ask_clarifying_question(state: WorkflowState) -> WorkflowState:
             "llm_calls": state.get("llm_calls", []) + [{
                 "node": "ask_clarifying_q",
                 "prompt": prompt[:200],
-                "response": response.content,
+                "response": raw[:500] if raw else "",
                 "timestamp": datetime.utcnow().isoformat()
             }]
         })
@@ -554,6 +780,19 @@ async def search_marketplaces(state: WorkflowState) -> WorkflowState:
     
     try:
         requirement_spec = state.get("requirement_spec")
+        # Recover from session when missing (e.g. resume after clarification with in-memory checkpointer)
+        if not requirement_spec:
+            session = await session_repo.get_session(state["session_id"])
+            if session and session.requirement_spec:
+                requirement_spec = session.requirement_spec
+                state["requirement_spec"] = requirement_spec
+                logger.info(f"SearchMarketplaces: Recovered requirement_spec from session (product_type={requirement_spec.product_type!r})")
+        if not requirement_spec:
+            # Last resort: build minimal spec from current user message so search can run
+            user_message = state.get("user_message", "")
+            requirement_spec = _fallback_requirement_spec_from_message(user_message)
+            state["requirement_spec"] = requirement_spec
+            logger.warning(f"SearchMarketplaces: No requirement_spec in state or session; using fallback from user_message (product_type={requirement_spec.product_type!r})")
         
         if not requirement_spec:
             logger.error("SearchMarketplaces: No requirement spec available")
@@ -562,15 +801,18 @@ async def search_marketplaces(state: WorkflowState) -> WorkflowState:
             return state
         
         # Call catalog service
+        query_desc = f"product_type={requirement_spec.product_type!r} brands={requirement_spec.brand_preferences!r}"
+        logger.info(f"SearchMarketplaces: Calling catalog with {query_desc}")
         results = await catalog_client.search_products(requirement_spec)
-        
+        count = len(results.products)
         state.update({
             "raw_search_results": results,
             "stage": WorkflowStage.SEARCHING,
             "node_trace": state.get("node_trace", []) + ["search_marketplaces"],
         })
-        
-        logger.info(f"SearchMarketplaces: Found {len(results.products)} results")
+        if count == 0:
+            logger.warning(f"SearchMarketplaces: Catalog returned 0 products for {query_desc}. Check catalog logs and RAPIDAPI_KEY.")
+        logger.info(f"SearchMarketplaces: Found {count} results")
         return state
         
     except Exception as e:
@@ -600,7 +842,10 @@ async def rank_and_compose(state: WorkflowState) -> WorkflowState:
             products_list = raw_results_obj if isinstance(raw_results_obj, list) else []
         
         if not products_list:
-            final_response = "I couldn't find any products matching your requirements. Would you like to adjust your criteria?"
+            final_response = (
+                "We couldn't find any products matching your search. "
+                "Try updating your criteria—for example, a different style, price range, or brand—and I'll search again."
+            )
             state.update({
                 "ranked_results": [],
                 "final_response": final_response,
@@ -618,7 +863,7 @@ async def rank_and_compose(state: WorkflowState) -> WorkflowState:
             return (price_score * 0.4) + (rating_score * 0.6)
         
         sorted_results = sorted(products_list, key=rank_score, reverse=True)
-        ranked_results = sorted_results[:10]  # Top 10
+        ranked_results = sorted_results[:TOP_N_RESULTS]
         
         # Compose response
         final_response = f"I found {len(ranked_results)} products matching your search for '{requirement_spec.product_type if requirement_spec else 'your query'}'. Here are the top results:"
@@ -663,7 +908,13 @@ async def done(state: WorkflowState) -> WorkflowState:
         completed_at=datetime.utcnow().isoformat(),
     )
     
-    logger.info(f"Done: Workflow completed, returned {len(state.get('ranked_results', []))} results")
+    num_results = len(state.get("ranked_results", []))
+    if num_results == 0:
+        logger.warning(
+            "Done: 0 results — catalog search returned no products. "
+            "Check SearchMarketplaces log for query sent and catalog/catalog-service logs for RapidAPI."
+        )
+    logger.info(f"Done: Workflow completed, returned {num_results} results")
     return state
 
 

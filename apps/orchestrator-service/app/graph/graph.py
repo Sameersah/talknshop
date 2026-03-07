@@ -41,13 +41,22 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-def should_process_audio(state: WorkflowState) -> Literal["transcribe_audio", "skip_audio"]:
-    """Conditional edge: Process audio if need_stt is True."""
-    return "transcribe_audio" if state.get("need_stt", False) else "skip_audio"
+def should_process_media(
+    state: WorkflowState,
+) -> Literal["transcribe_audio", "extract_image_attrs", "build_requirement"]:
+    """Conditional edge from need_media_ops: run audio first if needed, else image, else skip to build_requirement."""
+    if state.get("need_stt", False):
+        logger.info("Graph: need_media_ops -> transcribe_audio")
+        return "transcribe_audio"
+    if state.get("need_vision", False):
+        logger.info("Graph: need_media_ops -> extract_image_attrs (image will be processed)")
+        return "extract_image_attrs"  # Image-only path: process image before build_requirement
+    logger.info("Graph: need_media_ops -> build_requirement (no media ops)")
+    return "build_requirement"
 
 
 def should_process_image(state: WorkflowState) -> Literal["extract_image_attrs", "skip_image"]:
-    """Conditional edge: Process image if need_vision is True."""
+    """Conditional edge after transcribe_audio: Process image if need_vision is True."""
     return "extract_image_attrs" if state.get("need_vision", False) else "skip_image"
 
 
@@ -87,14 +96,15 @@ def build_buyer_flow_graph() -> StateGraph:
     # parse_input -> need_media_ops
     graph.add_edge("parse_input", "need_media_ops")
     
-    # need_media_ops -> [transcribe_audio | skip] (conditional)
+    # need_media_ops -> [transcribe_audio | extract_image_attrs | build_requirement] (conditional)
     graph.add_conditional_edges(
         "need_media_ops",
-        should_process_audio,
+        should_process_media,
         {
             "transcribe_audio": "transcribe_audio",
-            "skip_audio": "build_requirement",  # Skip directly to requirement building
-        }
+            "extract_image_attrs": "extract_image_attrs",
+            "build_requirement": "build_requirement",
+        },
     )
     
     # transcribe_audio -> [extract_image_attrs | skip] (conditional)

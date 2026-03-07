@@ -35,7 +35,7 @@ class MediaReference(BaseModel):
 class TurnInput(BaseModel):
     """User input for a single turn."""
     
-    message: str = Field(..., min_length=1, max_length=5000, description="User message")
+    message: str = Field("", max_length=5000, description="User message (may be empty if media is present)")
     media: List[MediaReference] = Field(default_factory=list, description="Optional media files")
     session_id: Optional[str] = Field(default=None, description="Session ID for continuation")
     user_id: str = Field(..., description="User identifier")
@@ -43,10 +43,15 @@ class TurnInput(BaseModel):
     @validator('message')
     def validate_message(cls, v: str) -> str:
         """Validate and clean message."""
-        v = v.strip()
-        if not v:
-            raise ValueError("Message cannot be empty")
-        return v
+        return (v or "").strip()
+    
+    @validator('media', always=True)
+    def message_or_media_required(cls, v: List, values: dict) -> List:
+        """Require at least one of message or media."""
+        msg = values.get("message", "")
+        if not (msg or (v and len(v) > 0)):
+            raise ValueError("Either message or media is required")
+        return v or []
 
 
 class ClarificationResponse(BaseModel):
@@ -278,13 +283,29 @@ class WorkflowState(TypedDict, total=False):
 # ===== Media Processing Models =====
 
 class TranscriptionResult(BaseModel):
-    """Audio transcription result."""
-    
-    transcript: str
-    confidence: float = Field(ge=0, le=1)
+    """Audio transcription result. Tolerates None from API by coercing to safe defaults."""
+
+    transcript: str = ""
+    confidence: float = Field(default=0.0, ge=0, le=1)
     language: str = "en"
     duration_seconds: Optional[float] = None
     segments: List[Dict[str, Any]] = Field(default_factory=list)
+
+    @validator("transcript", pre=True)
+    def coerce_transcript(cls, v: Any) -> str:
+        if v is None:
+            return ""
+        return v if isinstance(v, str) else str(v)
+
+    @validator("confidence", pre=True)
+    def coerce_confidence(cls, v: Any) -> float:
+        if v is None:
+            return 0.0
+        try:
+            f = float(v)
+            return max(0.0, min(1.0, f))
+        except (TypeError, ValueError):
+            return 0.0
 
 
 class ImageAttributes(BaseModel):

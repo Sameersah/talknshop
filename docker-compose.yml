@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   orchestrator-service:
     build: ./apps/orchestrator-service
@@ -38,6 +36,15 @@ services:
       - "8001:8001"
     env_file:
       - ./apps/media-service/.env
+    networks:
+      - talknshop-network
+
+  asl-service:
+    build: ./apps/asl-service
+    ports:
+      - "8004:8004"
+    env_file:
+      - ./apps/asl-service/.env
     networks:
       - talknshop-network
 

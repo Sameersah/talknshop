@@ -20,6 +20,26 @@ from app.graph.graph import buyer_flow_graph
 
 logger = logging.getLogger(__name__)
 
+# User-friendly progress messages (no internal graph step names)
+PROGRESS_MESSAGES = {
+    "parse_input": "Reading your message...",
+    "need_media_ops": "Checking your attachments...",
+    "transcribe_audio": "Listening to your voice message...",
+    "extract_image_attrs": "Looking at your image...",
+    "build_requirement": "Understanding what you're looking for...",
+    "need_clarify": "Checking if we need more details...",
+    "ask_clarifying_q": "Preparing a question for you...",
+    "search_marketplaces": "Searching for products...",
+    "rank_and_compose": "Picking the best matches...",
+}
+
+
+def _progress_message(step: str, node_name: Optional[str] = None) -> str:
+    if node_name:
+        key = str(node_name).lower().strip()
+        return PROGRESS_MESSAGES.get(key) or PROGRESS_MESSAGES.get(key.replace(" ", "_")) or "Working..."
+    return step
+
 
 async def handle_websocket_messages(
     websocket: WebSocket,
@@ -53,6 +73,10 @@ async def handle_websocket_messages(
         while True:
             # Receive message from client
             data = await websocket.receive_json()
+            # Any received message counts as activity (keeps connection from being marked stale)
+            metadata = manager.get_session_metadata(session_id)
+            if metadata:
+                metadata.update_activity()
             
             try:
                 client_msg = ClientMessage(**data)
@@ -62,9 +86,20 @@ async def handle_websocket_messages(
                 )
                 
                 # Handle different message types
+                if client_msg.type == EventType.PING:
+                    # Client heartbeat: update heartbeat and optionally send pong so client knows we're alive
+                    if metadata:
+                        metadata.update_heartbeat()
+                    await manager.send_event(
+                        session_id,
+                        EventType.PONG,
+                        {"timestamp": datetime.utcnow().isoformat()},
+                        log_event=False
+                    )
+                    continue
+                
                 if client_msg.type == EventType.PONG:
-                    # Heartbeat response
-                    metadata = manager.get_session_metadata(session_id)
+                    # Heartbeat response to server's ping
                     if metadata:
                         metadata.update_heartbeat()
                     continue
@@ -123,13 +158,13 @@ async def process_user_message(
     Process a user message through the LangGraph workflow and stream events.
     """
     try:
+        media_list = client_msg.media or []
         logger.info(
-            "Processing user message",
-            extra={
-                "session_id": session_id,
-                "message_length": len(client_msg.message) if client_msg.message else 0,
-                "media_count": len(client_msg.media)
-            }
+            "Processing user message: session_id=%s message_len=%d media_count=%d media_types=%s",
+            session_id,
+            len(client_msg.message or ""),
+            len(media_list),
+            [getattr(m, "media_type", m.get("media_type") if isinstance(m, dict) else None) for m in media_list],
         )
         
         # Send thinking indicator
@@ -220,23 +255,24 @@ async def stream_workflow_events(
     config = {"configurable": {"thread_id": session_id}}
     final_state: Optional[Dict[str, Any]] = None
     clarification_state: Optional[Dict[str, Any]] = None
-    
+    results_sent = False  # avoid sending RESULTS twice (in loop + post-loop)
+
     # langgraph astream_events requires explicit version kwarg for streaming
     async for event in buyer_flow_graph.astream_events(initial_state, config=config, version="v1"):
         event_type = event.get("event")
         node_name = event.get("name")
         data = event.get("data", {})
         
-        # Node started
+        # Node started (skip internal LangGraph nodes e.g. _write to avoid appearing stuck)
+        # Skip progress for "done" (completion is signaled by DONE event only)
         if event_type == "on_chain_start":
-            await manager.send_event(
-                session_id,
-                EventType.PROGRESS,
-                {
-                    "step": node_name,
-                    "message": f"Executing: {node_name}"
-                }
-            )
+            if node_name and not str(node_name).startswith("_") and str(node_name).lower() != "done":
+                message = _progress_message("", node_name)
+                await manager.send_event(
+                    session_id,
+                    EventType.PROGRESS,
+                    {"step": node_name, "message": message}
+                )
         
         # Streamed LLM tokens
         elif event_type == "on_chat_model_stream":
@@ -279,11 +315,11 @@ async def stream_workflow_events(
                     EventType.PROGRESS,
                     {
                         "step": "search_complete",
-                        "message": f"Found {count} products"
+                        "message": f"Found {count} products — picking the best matches..."
                     }
                 )
             
-            if node_name == "rank_and_compose":
+            if node_name == "rank_and_compose" and not results_sent:
                 await manager.send_event(
                     session_id,
                     EventType.RESULTS,
@@ -296,7 +332,8 @@ async def stream_workflow_events(
                         "final_response": output.get("final_response"),
                     }
                 )
-            
+                results_sent = True
+
             if node_name == "done":
                 final_state = output
         
@@ -310,8 +347,8 @@ async def stream_workflow_events(
     
     # Send completion if we reached the end
     if final_state is not None:
-        # Ensure results are emitted even if rank_and_compose wasn't caught
-        if "ranked_results" in final_state:
+        # Emit results only if we didn't already send them from rank_and_compose in the loop
+        if "ranked_results" in final_state and not results_sent:
             await manager.send_event(
                 session_id,
                 EventType.RESULTS,
@@ -324,7 +361,7 @@ async def stream_workflow_events(
                     "final_response": final_state.get("final_response"),
                 }
             )
-        
+
         await manager.send_event(
             session_id,
             EventType.DONE,

@@ -38,8 +38,18 @@ export class OrchestratorWebSocketClient {
 
         this.ws.onmessage = (event) => {
           try {
-            const data: WebSocketEvent = JSON.parse(event.data);
-            this.handleEvent(data);
+            const data = JSON.parse(event.data) as WebSocketEvent & { type?: string };
+            // Respond to server ping so server heartbeat stays fresh (avoids stale connection close)
+            if ((data as { type?: string }).type === 'ping') {
+              this.sendMessage({
+                type: 'pong' as any,
+                session_id: this.sessionId,
+                user_id: this.userId,
+                timestamp: new Date().toISOString()
+              });
+              return;
+            }
+            this.handleEvent(data as WebSocketEvent);
           } catch (error) {
             console.error('Failed to parse WebSocket message:', error);
           }
@@ -111,14 +121,24 @@ export class OrchestratorWebSocketClient {
     }
   }
 
-  sendChatMessage(text: string): void {
-    this.sendMessage({
+  sendChatMessage(text: string, media?: Array<{ media_type: 'image' | 'audio' | 'video'; s3_key: string; content_type: string; size_bytes: number }>): void {
+    const payload: WebSocketMessage & { message?: string; media?: unknown[] } = {
       type: 'message' as any,
       session_id: this.sessionId,
       user_id: this.userId,
-      message: text,
+      message: text ?? '',
       timestamp: new Date().toISOString()
-    });
+    };
+    if (media && media.length > 0) {
+      payload.media = media.map(m => ({
+        media_type: m.media_type,
+        s3_key: m.s3_key,
+        content_type: m.content_type,
+        size_bytes: m.size_bytes,
+        uploaded_at: new Date().toISOString()
+      }));
+    }
+    this.sendMessage(payload as WebSocketMessage);
   }
 
   on(event: EventType | 'ALL', handler: EventHandler): void {
@@ -140,7 +160,7 @@ export class OrchestratorWebSocketClient {
 
   private handleEvent(event: WebSocketEvent): void {
     // Call event-specific handlers
-    const eventHandlers = this.eventHandlers.get(event.event);
+    const eventHandlers = this.eventHandlers.get(event.type);
     if (eventHandlers) {
       eventHandlers.forEach(handler => handler(event));
     }

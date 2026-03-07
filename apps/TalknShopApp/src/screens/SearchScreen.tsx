@@ -1,10 +1,14 @@
-import React, { useState, useMemo, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Alert, FlatList } from 'react-native';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Alert, FlatList, ActivityIndicator } from 'react-native';
 import { useTheme } from '@/hooks/useTheme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { ProductCard } from '@/components/ProductCard';
 import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system';
+import { Audio } from 'expo-av';
+import { OrchestratorWebSocketClient, type MediaItemForSend } from '@/services/orchestratorWebSocket';
+import { uploadMediaFile } from '@/services/mediaUploadService';
 import { getFeaturedProducts, searchProducts, Product } from '@/data/products';
 
 const CONVERSATION_STARTERS = [
@@ -14,12 +18,50 @@ const CONVERSATION_STARTERS = [
   'Find me a good laptop bag',
 ];
 
+const getFileSize = async (uri: string): Promise<number> => {
+  try {
+    const info = await FileSystem.getInfoAsync(uri, { size: true });
+    return (info as { size?: number }).size ?? 0;
+  } catch {
+    return 0;
+  }
+};
+
 export const SearchScreen: React.FC = () => {
   const { colors, typography } = useTheme();
   const insets = useSafeAreaInsets();
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Product[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [mediaUploading, setMediaUploading] = useState(false);
+  const wsClientRef = useRef<OrchestratorWebSocketClient | null>(null);
+  const recordingRef = useRef<Audio.Recording | null>(null);
+
+  const sessionIdRef = useRef(`sess_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
+  const userIdRef = useRef('user_ios');
+
+  useEffect(() => {
+    const client = new OrchestratorWebSocketClient({
+      sessionId: sessionIdRef.current,
+      userId: userIdRef.current,
+    });
+    wsClientRef.current = client;
+    client.connect().catch((e) => console.warn('Orchestrator WS connect failed', e));
+    return () => {
+      client.disconnect();
+      wsClientRef.current = null;
+    };
+  }, []);
+
+  const sendMediaToOrchestrator = async (mediaItems: MediaItemForSend[]) => {
+    const client = wsClientRef.current;
+    if (!client?.isConnected()) {
+      Alert.alert('Not Connected', 'Connecting to assistant… Try again in a moment.');
+      return;
+    }
+    client.sendUserMessage('', mediaItems);
+    Alert.alert('Sent', 'Your audio/video/image was sent to the assistant.');
+  };
 
   const handleSearch = () => {
     const query = searchQuery.trim();
@@ -70,29 +112,139 @@ export const SearchScreen: React.FC = () => {
 
   const handleImageSearch = async () => {
     try {
-      // Request permissions
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (status !== 'granted') {
         Alert.alert('Permission Required', 'Please grant camera roll permissions to search with images.');
         return;
       }
-
-      // Launch image picker
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsEditing: true,
         aspect: [4, 3],
         quality: 0.8,
       });
-
-      if (!result.canceled && result.assets[0]) {
-        console.log('Image selected:', result.assets[0].uri);
-        // TODO: Process image and perform search
-        Alert.alert('Image Search', 'Image selected! Processing...');
+      if (result.canceled || !result.assets[0]) return;
+      const asset = result.assets[0];
+      const uri = asset.uri;
+      const fileName = uri.split('/').pop() ?? `image_${Date.now()}.jpg`;
+      const contentType = 'image/jpeg';
+      const fileSize = asset.fileSize ?? (await getFileSize(uri));
+      setMediaUploading(true);
+      try {
+        const { s3_key } = await uploadMediaFile(uri, fileName, contentType, fileSize, 'image');
+        await sendMediaToOrchestrator([
+          { media_type: 'image', s3_key, content_type: contentType, size_bytes: fileSize },
+        ]);
+      } catch (e) {
+        Alert.alert('Upload Failed', e instanceof Error ? e.message : 'Could not upload image');
+      } finally {
+        setMediaUploading(false);
       }
     } catch (error) {
       console.error('Image picker error:', error);
       Alert.alert('Error', 'Failed to pick image');
+    }
+  };
+
+  const handleVideoSearch = async () => {
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Please grant camera roll permissions for video.');
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+        allowsEditing: false,
+      });
+      if (result.canceled || !result.assets[0]) return;
+      const asset = result.assets[0];
+      const uri = asset.uri;
+      const fileName = uri.split('/').pop() ?? `video_${Date.now()}.mp4`;
+      const contentType = 'video/mp4';
+      const fileSize = asset.fileSize ?? (await getFileSize(uri));
+      setMediaUploading(true);
+      try {
+        const { s3_key } = await uploadMediaFile(uri, fileName, contentType, fileSize, 'video');
+        await sendMediaToOrchestrator([
+          { media_type: 'video', s3_key, content_type: contentType, size_bytes: fileSize },
+        ]);
+      } catch (e) {
+        Alert.alert('Upload Failed', e instanceof Error ? e.message : 'Could not upload video');
+      } finally {
+        setMediaUploading(false);
+      }
+    } catch (error) {
+      console.error('Video picker error:', error);
+      Alert.alert('Error', 'Failed to pick video');
+    }
+  };
+
+  const handleVoiceSearch = async () => {
+    try {
+      const { status } = await Audio.requestPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Please grant microphone access to record audio.');
+        return;
+      }
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
+        shouldDuckAndroid: true,
+        playThroughEarpieceAndroid: false,
+      });
+      const recording = new Audio.Recording();
+      await recording.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      recordingRef.current = recording;
+      await recording.startAsync();
+      Alert.alert(
+        'Recording',
+        'Tap OK when you are done speaking.',
+        [
+          {
+            text: 'Stop & Send',
+            onPress: async () => {
+              try {
+                await recording.stopAndUnloadAsync();
+                const uri = recording.getURI();
+                recordingRef.current = null;
+                if (!uri) {
+                  Alert.alert('Error', 'No recording saved');
+                  return;
+                }
+                const fileName = `audio_${Date.now()}.m4a`;
+                const contentType = 'audio/m4a';
+                const fileSize = await getFileSize(uri);
+                setMediaUploading(true);
+                try {
+                  const { s3_key } = await uploadMediaFile(uri, fileName, contentType, fileSize, 'audio');
+                  await sendMediaToOrchestrator([
+                    { media_type: 'audio', s3_key, content_type: contentType, size_bytes: fileSize },
+                  ]);
+                } catch (e) {
+                  Alert.alert('Upload Failed', e instanceof Error ? e.message : 'Could not upload audio');
+                } finally {
+                  setMediaUploading(false);
+                }
+              } catch (e) {
+                Alert.alert('Error', e instanceof Error ? e.message : 'Failed to stop recording');
+              }
+            },
+          },
+          { text: 'Cancel', style: 'cancel', onPress: async () => {
+            try {
+              await recording.stopAndUnloadAsync();
+            } catch {
+              // ignore
+            }
+            recordingRef.current = null;
+          } },
+        ]
+      );
+    } catch (error) {
+      console.error('Voice recording error:', error);
+      Alert.alert('Error', 'Failed to start recording');
     }
   };
 
@@ -158,22 +310,34 @@ export const SearchScreen: React.FC = () => {
           )}
         </View>
         
-        {/* Quick Action Buttons */}
+        {/* Quick Action Buttons: Voice (audio), Video, Photo - upload and send to assistant */}
         <View style={styles.quickActions}>
           <TouchableOpacity
             style={[styles.quickActionButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
-            onPress={() => {
-              // Open voice recording
-              Alert.alert('Voice Search', 'Voice search coming soon! Use the search bar for now.');
-            }}
+            onPress={handleVoiceSearch}
+            disabled={mediaUploading}
             activeOpacity={0.7}
           >
-            <Ionicons name="mic" size={18} color={colors.primary} />
+            {mediaUploading ? (
+              <ActivityIndicator size="small" color={colors.primary} />
+            ) : (
+              <Ionicons name="mic" size={18} color={colors.primary} />
+            )}
             <Text style={[styles.quickActionText, { color: colors.text }]}>Voice</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.quickActionButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
+            onPress={handleVideoSearch}
+            disabled={mediaUploading}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="videocam" size={18} color={colors.primary} />
+            <Text style={[styles.quickActionText, { color: colors.text }]}>Video</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.quickActionButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
             onPress={handleImageSearch}
+            disabled={mediaUploading}
             activeOpacity={0.7}
           >
             <Ionicons name="camera" size={18} color={colors.primary} />

@@ -13,11 +13,22 @@ class ProcessingStatus(str, Enum):
 
 
 class AudioTranscriptionRequest(BaseModel):
+    """Request with base64 audio (legacy)."""
     audio_file: str = Field(..., description="Base64 encoded audio file")
     language_code: str = Field(default="en-US", description="Language code for transcription")
     speaker_count: Optional[int] = Field(default=None, description="Number of speakers")
     vocabulary_name: Optional[str] = Field(default=None, description="Custom vocabulary name")
     output_format: str = Field(default="json", description="Output format")
+
+
+class TranscribeRequest(BaseModel):
+    """Transcribe by base64 audio (audio_file) or by S3 key (s3_key). One of them required."""
+    audio_file: Optional[str] = Field(default=None, description="Base64 encoded audio (legacy)")
+    s3_key: Optional[str] = Field(default=None, description="S3 key of uploaded audio (orchestrator)")
+    language: Optional[str] = Field(default=None, description="Language code e.g. 'en' (orchestrator)")
+    language_code: Optional[str] = Field(default="en-US", description="Language code e.g. 'en-US'")
+    speaker_count: Optional[int] = None
+    vocabulary_name: Optional[str] = None
 
 
 class SpeakerSegment(BaseModel):
@@ -30,11 +41,26 @@ class SpeakerSegment(BaseModel):
 class AudioTranscriptionResponse(BaseModel):
     transcription_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     status: ProcessingStatus
-    transcript: Optional[str] = Field(default=None, description="Full transcript text")
-    confidence: Optional[float] = Field(default=None, description="Overall confidence score")
+    transcript: Optional[str] = Field(default="", description="Full transcript text (never null in JSON)")
+    confidence: Optional[float] = Field(default=0.0, description="Overall confidence score (never null in JSON)")
     speakers: Optional[List[SpeakerSegment]] = Field(default=None, description="Speaker segments")
     processing_time: Optional[float] = Field(default=None, description="Processing time in seconds")
     error_message: Optional[str] = Field(default=None, description="Error message if failed")
+
+    @validator("transcript", pre=True)
+    def _transcript_never_none(cls, v: Any) -> str:
+        if v is None:
+            return ""
+        return v if isinstance(v, str) else str(v)
+
+    @validator("confidence", pre=True)
+    def _confidence_never_none(cls, v: Any) -> float:
+        if v is None:
+            return 0.0
+        try:
+            return max(0.0, min(1.0, float(v)))
+        except (TypeError, ValueError):
+            return 0.0
 
 
 class ImageAnalysisRequest(BaseModel):
@@ -77,6 +103,22 @@ class ImageAnalysisResponse(BaseModel):
     objects: Optional[List[Object]] = Field(default=None, description="Detected objects")
     processing_time: Optional[float] = Field(default=None, description="Processing time in seconds")
     error_message: Optional[str] = Field(default=None, description="Error message if failed")
+
+
+class ExtractImageAttributesRequest(BaseModel):
+    """Request to extract image attributes from a file already in S3 (by key)."""
+    s3_key: str = Field(..., description="S3 object key of the image file")
+    extract_text: bool = Field(default=True, description="Whether to extract text (OCR)")
+    extract_objects: bool = Field(default=True, description="Whether to detect objects")
+
+
+class ExtractImageAttributesResponse(BaseModel):
+    """Response shape expected by orchestrator (ImageAttributes)."""
+    labels: List[str] = Field(default_factory=list, description="Detected label names")
+    objects: List[Dict[str, Any]] = Field(default_factory=list, description="Detected objects (name, confidence, etc.)")
+    text: List[str] = Field(default_factory=list, description="Detected text strings")
+    dominant_colors: List[str] = Field(default_factory=list, description="Dominant colors")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Extra metadata (e.g. processing_time)")
 
 
 class MediaUploadRequest(BaseModel):

@@ -59,10 +59,16 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS Middleware
+# CORS Middleware: allow web app origins in development so attach (upload URL) works even without proxy
+if settings.debug:
+    _cors_origins = ["*"]
+elif settings.environment == "development":
+    _cors_origins = ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000", "http://127.0.0.1:3000"]
+else:
+    _cors_origins = []
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if settings.debug else [],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -91,6 +97,45 @@ async def global_exception_handler(request, exc: Exception):
 # =============================================================================
 # HTTP Endpoints
 # =============================================================================
+
+# -----------------------------------------------------------------------------
+# Media upload URL (presigned URL for client -> S3 upload)
+# -----------------------------------------------------------------------------
+
+from pydantic import BaseModel, Field
+
+class MediaUploadUrlRequest(BaseModel):
+    """Request body for getting a presigned upload URL."""
+    file_name: str = Field(..., description="Original file name")
+    content_type: str = Field(..., description="MIME type (e.g. image/jpeg, audio/mpeg, video/mp4)")
+    file_size: int = Field(..., ge=0, description="File size in bytes")
+    media_type: str = Field(default="image", description="One of: image, audio, video")
+
+class MediaUploadUrlResponse(BaseModel):
+    """Response with presigned URL and S3 key for the client to use in the chat message."""
+    upload_url: str = Field(..., description="Presigned S3 PUT URL; client uploads file here")
+    s3_key: str = Field(..., description="S3 key to send in message.media[].s3_key")
+
+@app.post("/api/v1/media/upload-url", response_model=MediaUploadUrlResponse, tags=["media"])
+async def get_media_upload_url(body: MediaUploadUrlRequest):
+    """
+    Get a presigned URL for uploading media (image, audio, video) to S3.
+    Client should: 1) POST here with file_name, content_type, file_size, media_type;
+    2) PUT the file to upload_url; 3) Send chat message with media: [{ media_type, s3_key, ... }].
+    """
+    from app.core.errors import MediaProcessingError
+    from fastapi import HTTPException
+    try:
+        result = await media_client.get_upload_url(
+            file_name=body.file_name,
+            content_type=body.content_type,
+            file_size=body.file_size,
+            media_type=body.media_type,
+        )
+        return MediaUploadUrlResponse(upload_url=result["upload_url"], s3_key=result["s3_key"])
+    except MediaProcessingError as e:
+        raise HTTPException(status_code=502, detail=e.message or str(e))
+
 
 @app.get("/", tags=["root"])
 async def root():

@@ -42,9 +42,23 @@ export interface WebSocketMessage {
 export interface MediaReference {
   media_id: string;
   s3_key: string;
-  category: 'IMAGE' | 'AUDIO';
+  category: 'IMAGE' | 'AUDIO' | 'VIDEO';
   mime_type: string;
   size_bytes: number;
+}
+
+/** Request body for getting a presigned upload URL from orchestrator */
+export interface MediaUploadUrlRequest {
+  file_name: string;
+  content_type: string;
+  file_size: number;
+  media_type?: 'image' | 'audio' | 'video';
+}
+
+/** Response from POST /api/v1/media/upload-url */
+export interface MediaUploadUrlResponse {
+  upload_url: string;
+  s3_key: string;
 }
 
 export interface WebSocketEvent {
@@ -56,6 +70,7 @@ export interface WebSocketEvent {
     token?: string;
     question?: string;
     products?: ProductResult[];
+    final_response?: string;
     error?: {
       code?: string;
       message?: string;
@@ -78,6 +93,8 @@ export interface ProductResult {
   availability?: string;
 }
 
+export type AttachedMediaType = 'image' | 'audio' | 'video';
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -87,6 +104,8 @@ export interface ChatMessage {
   isStreaming?: boolean;
   products?: ProductResult[];
   clarificationQuestion?: string;
+  /** When user sent with media (voice, image, ASL video), show indicators in bubble */
+  attachedMedia?: { media_type: AttachedMediaType }[];
 }
 
 export interface ConnectionStatus {

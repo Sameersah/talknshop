@@ -104,6 +104,23 @@ talknshop/
 
 ## 🚀 Services
 
+### End-to-end buyer flow: which services must be up
+
+For the **buyer flow** (search by chat, e.g. “I want to buy nike shoes”) to work end-to-end you need:
+
+| Service | Required | Purpose |
+|--------|----------|--------|
+| **orchestrator-service** (8000) | Yes | WebSocket, LangGraph graph, Bedrock, calls catalog |
+| **catalog-service** (8002) | Yes | Product search (e.g. RapidAPI Amazon) |
+| **media-service** (8001) | Only if using voice/image | Transcribe audio, extract image attributes |
+| **seller-crosspost-service** (8003) | No (seller flow) | Listing cross-post |
+
+**Rank and compose** is **not** a separate service. It is a **node inside the orchestrator** (same process). The graph runs: ParseInput → NeedMediaOps → … → BuildRequirement → NeedClarify → [AskClarifyingQ \| SearchMarketplaces] → **RankAndCompose** → Done. All of that runs in `orchestrator-service`.
+
+After a **clarification question**, the client must send the user’s answer with type `ANSWER` so the orchestrator **resumes** the same session (same `session_id`). The next run continues from the checkpoint with the new message. If the UI shows “Executing: _write” and seems stuck, that is LangGraph’s internal checkpoint write; the orchestrator now skips emitting progress for internal nodes (e.g. `_write`) so the client does not hang on that step.
+
+---
+
 ### 1. Orchestrator Service (Port 8000)
 **Purpose**: Central coordination service for both buyer and seller flows
 

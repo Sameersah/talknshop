@@ -2,7 +2,7 @@ import { Platform } from 'react-native';
 import { LOCAL_IP, SERVICE_URLS } from '@/constants/config';
 import Constants from 'expo-constants';
 
-export type OrchestratorClientMessageType = 'message' | 'answer' | 'pong' | 'disconnect';
+export type OrchestratorClientMessageType = 'message' | 'answer' | 'ping' | 'pong' | 'disconnect';
 export type OrchestratorServerEventType =
   | 'connected'
   | 'progress'
@@ -14,10 +14,18 @@ export type OrchestratorServerEventType =
   | 'done'
   | 'ping';
 
+export type MediaItemForSend = {
+  media_type: 'image' | 'audio' | 'video';
+  s3_key: string;
+  content_type?: string;
+  size_bytes?: number;
+  uploaded_at?: string;
+};
+
 export interface OrchestratorClientMessage {
   type: OrchestratorClientMessageType;
   message?: string;
-  media?: Array<{ media_type: 'image' | 'audio' | 'video'; s3_key: string }>;
+  media?: MediaItemForSend[];
   session_id?: string;
 }
 
@@ -39,30 +47,32 @@ const toWebSocketBaseUrl = (httpBaseUrl: string): string => {
 
 const buildHttpBaseCandidates = (): string[] => {
   const base = SERVICE_URLS.ORCHESTRATOR;
-  const candidates = new Set<string>();
+  const with127 = base.includes('localhost') ? base.replace('localhost', '127.0.0.1') : '';
+  const withLocalIp =
+    __DEV__ && Platform.OS === 'ios' && base.includes('localhost') && LOCAL_IP
+      ? base.replace('localhost', LOCAL_IP)
+      : '';
 
-  candidates.add(base);
-
-  // Some environments behave differently for "localhost" resolution.
-  // iOS Simulator usually supports localhost, but if anything is off, 127.0.0.1 can help.
-  if (base.includes('localhost')) {
-    candidates.add(base.replace('localhost', '127.0.0.1'));
-  }
-
-  // For physical iOS devices, localhost won't work; LOCAL_IP is required.
-  // Simulator detection can be flaky in Expo Go, so include LOCAL_IP as a fallback.
-  if (__DEV__ && Platform.OS === 'ios' && base.includes('localhost') && LOCAL_IP) {
-    candidates.add(base.replace('localhost', LOCAL_IP));
-  }
-
-  return Array.from(candidates);
+  // On physical iOS device, localhost is the device; try Mac's IP first so we connect in one try.
+  const order =
+    withLocalIp && Platform.OS === 'ios'
+      ? [withLocalIp, base, with127].filter(Boolean)
+      : [base, with127, withLocalIp].filter(Boolean);
+  return [...new Set(order)];
 };
+
+const PING_INTERVAL_MS = 25000;
+const RECONNECT_MAX_ATTEMPTS = 5;
+const RECONNECT_BASE_DELAY_MS = 1000;
 
 export class OrchestratorWebSocketClient {
   private ws: WebSocket | null = null;
   private url: string;
   private urlCandidates: string[];
   private handlers: Set<OrchestratorEventHandler> = new Set();
+  private shouldReconnect = true;
+  private reconnectAttempts = 0;
+  private pingInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(params: { sessionId: string; userId: string }) {
     const { sessionId, userId } = params;
@@ -96,7 +106,13 @@ export class OrchestratorWebSocketClient {
             }
           }
 
-          reject(new Error(`WebSocket error: failed to connect to any candidate URL`));
+          const hint =
+            Platform.OS === 'ios' && LOCAL_IP
+              ? ` Start the orchestrator on your Mac (e.g. docker-compose up orchestrator-service) and ensure it listens on 0.0.0.0:8000. On a physical device, set LOCAL_IP in config to your Mac's IP (${LOCAL_IP}).`
+              : ' Start the orchestrator (e.g. docker-compose up orchestrator-service) and ensure it is running on port 8000.';
+          reject(
+            new Error(`Cannot connect to orchestrator.${hint}`)
+          );
         };
 
         void tryConnect();
@@ -107,6 +123,7 @@ export class OrchestratorWebSocketClient {
   }
 
   private connectOnce(url: string, timeoutMs: number): Promise<void> {
+    const self = this;
     return new Promise((resolve, reject) => {
       let settled = false;
       const ws = new WebSocket(url);
@@ -128,14 +145,16 @@ export class OrchestratorWebSocketClient {
         clearTimeout(timeout);
 
         // Replace existing ws
-        if (this.ws) {
+        if (self.ws) {
           try {
-            this.ws.close();
+            self.ws.close();
           } catch {
             // ignore
           }
         }
-        this.ws = ws;
+        self.ws = ws;
+        self.reconnectAttempts = 0;
+        self.startPingInterval();
 
         ws.onmessage = (event) => {
           try {
@@ -143,18 +162,29 @@ export class OrchestratorWebSocketClient {
 
             // Auto-handle ping/pong heartbeat
             if (parsed?.type === 'ping') {
-              this.send({ type: 'pong' });
+              self.send({ type: 'pong' });
               return;
             }
 
-            this.handlers.forEach((h) => h(parsed));
+            self.handlers.forEach((h) => h(parsed));
           } catch (e) {
             console.warn('Failed to parse WS message', e);
           }
         };
 
         ws.onclose = () => {
-          if (this.ws === ws) this.ws = null;
+          self.stopPingInterval();
+          if (self.ws === ws) self.ws = null;
+          if (self.shouldReconnect && self.reconnectAttempts < RECONNECT_MAX_ATTEMPTS) {
+            self.reconnectAttempts++;
+            const delay = RECONNECT_BASE_DELAY_MS * Math.pow(2, self.reconnectAttempts - 1);
+            console.warn(
+              `WebSocket closed; reconnecting in ${delay}ms (attempt ${self.reconnectAttempts}/${RECONNECT_MAX_ATTEMPTS})`
+            );
+            setTimeout(() => {
+              self.connect().catch((e) => console.warn('Reconnect failed', e));
+            }, delay);
+          }
         };
 
         ws.onerror = () => {
@@ -179,6 +209,8 @@ export class OrchestratorWebSocketClient {
   }
 
   disconnect(): void {
+    this.shouldReconnect = false;
+    this.stopPingInterval();
     try {
       this.send({ type: 'disconnect' });
     } catch {
@@ -187,6 +219,26 @@ export class OrchestratorWebSocketClient {
     if (this.ws) {
       this.ws.close();
       this.ws = null;
+    }
+  }
+
+  private startPingInterval(): void {
+    this.stopPingInterval();
+    this.pingInterval = setInterval(() => {
+      try {
+        if (this.ws?.readyState === WebSocket.OPEN) {
+          this.send({ type: 'ping' });
+        }
+      } catch {
+        // ignore
+      }
+    }, PING_INTERVAL_MS);
+  }
+
+  private stopPingInterval(): void {
+    if (this.pingInterval != null) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = null;
     }
   }
 
@@ -206,8 +258,19 @@ export class OrchestratorWebSocketClient {
     this.ws.send(JSON.stringify(message));
   }
 
-  sendUserMessage(text: string): void {
-    this.send({ type: 'message', message: text });
+  sendUserMessage(text: string, media?: MediaItemForSend[]): void {
+    const payload: OrchestratorClientMessage = { type: 'message', message: text ?? '' };
+    if (media && media.length > 0) {
+      const now = new Date().toISOString();
+      payload.media = media.map((m) => ({
+        media_type: m.media_type,
+        s3_key: m.s3_key,
+        content_type: m.content_type ?? 'application/octet-stream',
+        size_bytes: m.size_bytes ?? 0,
+        uploaded_at: m.uploaded_at ?? now,
+      }));
+    }
+    this.send(payload);
   }
 
   sendClarificationAnswer(text: string): void {

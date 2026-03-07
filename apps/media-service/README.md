@@ -70,6 +70,11 @@ AWS_SECRET_ACCESS_KEY=your_secret_key
 S3_BUCKET_NAME=talknshop-media
 S3_PREFIX=uploads/
 
+# Media TTL: all uploaded media (uploads/, audio/) is auto-deleted from S3 after this many minutes (default 15)
+MEDIA_TTL_MINUTES=15
+# How often the S3 TTL cleanup job runs, in seconds (default 300 = 5 min)
+CLEANUP_INTERVAL_SECONDS=300
+
 # AWS Services
 TRANSCRIBE_LANGUAGE_CODE=en-US
 REKOGNITION_MAX_LABELS=10
@@ -82,9 +87,46 @@ ORCHESTRATOR_SERVICE_URL=http://orchestrator-service:8000
 LOG_LEVEL=INFO
 DEBUG=false
 MAX_FILE_SIZE=50MB
-ALLOWED_AUDIO_FORMATS=mp3,wav,m4a,flac
+ALLOWED_AUDIO_FORMATS=mp3,wav,m4a,flac,webm
 ALLOWED_IMAGE_FORMATS=jpg,jpeg,png,webp
 ```
+
+### S3 CORS for web app uploads
+
+The web app uploads files **directly to S3** using a presigned URL. The browser will block the PUT if the bucket does not allow your app’s origin. Apply CORS to your media bucket using one of the options below.
+
+**Option A – AWS CLI** (bucket name from env or default `talknshop-media-storage`):
+
+```bash
+cd apps/media-service
+BUCKET="${S3_BUCKET_NAME:-talknshop-media-storage}"
+aws s3api put-bucket-cors --bucket "$BUCKET" --cors-configuration file://s3-cors.json
+```
+
+**Option B – AWS Console**
+
+1. Open **S3** → select the **same bucket** your media-service uses (env `S3_BUCKET_NAME` or default `talknshop-media-storage`) → **Permissions**.
+2. Under **Cross-origin resource sharing (CORS)**, click **Edit**.
+3. Paste the **entire** contents of `apps/media-service/s3-cors.json` (must include the `"CORSRules"` wrapper). Some consoles accept only the array: if so, paste the array inside `CORSRules` (the `[ { ... }, { ... } ]` part).
+4. Save.
+
+The sample config includes a rule with `"AllowedOrigins": ["*"]` so any origin can PUT; if uploads work with that, add your real origin (e.g. `http://localhost:5173`) and you can remove the `"*"` rule for production.
+
+**Important:** CORS must be set on the bucket that appears in the presigned URL (the bucket media-service uses). If upload still fails, check the error message in the app—it will show the exact origin to add to CORS.
+
+### Verifying Ollama (when media-service runs in Docker)
+
+Ollama is used for vision-based product descriptions (e.g. "bomber jacket"). When media-service runs in **Docker Desktop**, the container cannot use `localhost:11434`; it must reach Ollama on the **host**.
+
+1. **Run Ollama on your host** (not in a container): install from [ollama.com](https://ollama.com), start it, then run `ollama pull llava:7b`.
+2. **In `apps/media-service/.env`** set:
+   - `OLLAMA_HOST=http://host.docker.internal:11434` (Docker Desktop; on Linux you may need your host IP, e.g. `http://172.17.0.1:11434`)
+   - `OLLAMA_MODEL=llava:7b`
+3. **Restart media-service**: `docker-compose up -d --build media-service`
+4. **Check status**: `curl -s http://localhost:8001/api/v1/ollama/status`  
+   You should see `"available": true` and `"models": ["llava:7b", ...]`. If `available` is false, read the `error` field (e.g. connection refused → wrong host or Ollama not running; model missing → `ollama pull llava:7b`).
+
+If Ollama is unavailable, image extraction still works with Rekognition only.
 
 ## Local Development
 
@@ -268,10 +310,10 @@ docker-compose up media-service
 {
   "error": {
     "code": "INVALID_FILE_FORMAT",
-    "message": "Unsupported audio format. Supported formats: mp3, wav, m4a",
+    "message": "Unsupported audio format. Supported formats: mp3, wav, m4a, flac, webm",
     "details": {
       "received_format": "avi",
-      "supported_formats": ["mp3", "wav", "m4a", "flac"]
+      "supported_formats": ["mp3", "wav", "m4a", "flac", "webm"]
     }
   }
 }

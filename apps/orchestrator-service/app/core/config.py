@@ -35,8 +35,8 @@ class Settings(BaseSettings):
     
     # AWS Bedrock
     bedrock_model_id: str = Field(
-        default="anthropic.claude-3-sonnet-20240229-v1:0",
-        description="Bedrock model ID for LLM operations"
+        default="global.anthropic.claude-sonnet-4-6",
+        description="Bedrock model ID or inference profile ID (e.g. global.anthropic.claude-sonnet-4-6)"
     )
     bedrock_streaming: bool = Field(default=True, description="Enable streaming responses from Bedrock")
     bedrock_max_tokens: int = Field(default=2048, description="Max tokens for Bedrock responses")
@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     
     # Service Client Settings
     http_timeout: float = Field(default=30.0, description="HTTP client timeout in seconds")
+    media_extract_image_timeout: float = Field(
+        default=180.0,
+        description="Timeout for media-service extract-image-attributes (Ollama vision can take 1–3 min)",
+    )
     http_max_retries: int = Field(default=3, description="Maximum HTTP retry attempts")
     http_retry_backoff: float = Field(default=1.0, description="Retry backoff multiplier")
     

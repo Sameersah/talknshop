@@ -79,7 +79,7 @@ class ConnectionManager:
         self._heartbeat_tasks: Dict[str, asyncio.Task] = {}
         self._cleanup_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
-        
+        self._not_connected_warned: Set[str] = set()  # session_ids we already logged "not connected" for
         logger.info("ConnectionManager initialized")
     
     async def connect(
@@ -115,6 +115,7 @@ class ConnectionManager:
                 # Register connection
                 self.active_connections[session_id] = websocket
                 self.connection_metadata[session_id] = ConnectionMetadata(user_id, session_id)
+                self._not_connected_warned.discard(session_id)  # allow fresh warning if this connection drops
             
             # Start heartbeat
             heartbeat_task = asyncio.create_task(self._heartbeat_loop(session_id))
@@ -205,7 +206,15 @@ class ConnectionManager:
             bool: True if sent successfully, False otherwise
         """
         if session_id not in self.active_connections:
-            logger.warning(f"Cannot send event: session {session_id} not connected")
+            if session_id not in self._not_connected_warned:
+                self._not_connected_warned.add(session_id)
+                logger.warning(
+                    "Cannot send event: session %s not connected (client likely disconnected during request). "
+                    "Further send attempts for this session will be logged at DEBUG.",
+                    session_id,
+                )
+            else:
+                logger.debug("Cannot send event: session %s not connected", session_id)
             return False
         
         try:

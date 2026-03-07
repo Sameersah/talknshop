@@ -10,7 +10,7 @@ const WS_URL = import.meta.env.VITE_ORCHESTRATOR_WS_URL || import.meta.env.VITE_
 
 interface UseWebSocketReturn {
   messages: ChatMessage[];
-  sendMessage: (text: string) => void;
+  sendMessage: (text: string, media?: { media_type: 'image' | 'audio' | 'video'; s3_key: string; content_type: string; size_bytes: number }[]) => void;
   connected: boolean;
   connecting: boolean;
   error: string | null;
@@ -48,12 +48,6 @@ export const useWebSocket = (sessionId: string, userId: string): UseWebSocketRet
         setConnected(true);
         setConnecting(false);
         setError(null);
-        addMessage({
-          id: Date.now().toString(),
-          role: 'system',
-          content: '✅ Connected to TalknShop',
-          timestamp: new Date(),
-        });
         break;
 
       case EventType.PROGRESS:
@@ -61,12 +55,28 @@ export const useWebSocket = (sessionId: string, userId: string): UseWebSocketRet
           setCurrentStage(event.data.stage);
         }
         if (event.data.message) {
-          addMessage({
-            id: Date.now().toString(),
-            role: 'system',
-            content: `⏳ ${event.data.message}`,
-            timestamp: new Date(),
-            stage: event.data.stage,
+          const progressContent = `⏳ ${event.data.message}`;
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            const isProgressMessage = last?.role === 'system' && typeof last.content === 'string' && last.content.startsWith('⏳ ');
+            if (last?.role === 'system' && last.content === progressContent) {
+              return prev;
+            }
+            if (isProgressMessage) {
+              return prev.map((m, i) =>
+                i === prev.length - 1 ? { ...m, content: progressContent, stage: event.data.stage } : m
+              );
+            }
+            return [
+              ...prev,
+              {
+                id: Date.now().toString(),
+                role: 'system' as const,
+                content: progressContent,
+                timestamp: new Date(),
+                stage: event.data.stage,
+              },
+            ];
           });
         }
         break;
@@ -74,14 +84,12 @@ export const useWebSocket = (sessionId: string, userId: string): UseWebSocketRet
       case EventType.TOKEN:
         if (event.data.token) {
           if (streamingMessageRef.current) {
-            // Update existing streaming message
             streamingMessageRef.current.content += event.data.token;
             updateLastMessage(msg => ({
               ...msg,
               content: streamingMessageRef.current!.content,
             }));
           } else {
-            // Start new streaming message
             streamingMessageRef.current = {
               id: Date.now().toString(),
               role: 'assistant',
@@ -89,32 +97,71 @@ export const useWebSocket = (sessionId: string, userId: string): UseWebSocketRet
               timestamp: new Date(),
               isStreaming: true,
             };
-            addMessage(streamingMessageRef.current);
+            setMessages((prev) => {
+              const withoutProgress = prev.filter(
+                (m) => !(m.role === 'system' && typeof m.content === 'string' && m.content.startsWith('⏳ '))
+              );
+              return [...withoutProgress, streamingMessageRef.current!];
+            });
           }
         }
         break;
 
       case EventType.CLARIFICATION:
         if (event.data.question) {
-          addMessage({
-            id: Date.now().toString(),
-            role: 'assistant',
-            content: `❓ ${event.data.question}`,
-            timestamp: new Date(),
-            clarificationQuestion: event.data.question,
+          setMessages((prev) => {
+            const withoutProgress = prev.filter(
+              (m) => !(m.role === 'system' && typeof m.content === 'string' && m.content.startsWith('⏳ '))
+            );
+            return [
+              ...withoutProgress,
+              {
+                id: Date.now().toString(),
+                role: 'assistant' as const,
+                content: `❓ ${event.data.question}`,
+                timestamp: new Date(),
+                clarificationQuestion: event.data.question,
+              },
+            ];
           });
         }
         break;
 
-      case EventType.RESULTS:
-        if (event.data.products && event.data.products.length > 0) {
-          addMessage({
+      case EventType.RESULTS: {
+        const products = (event.data.products ?? []) as ProductResult[];
+        const count = products.length;
+        const noResultsContent =
+          event.data.final_response ||
+          "We couldn't find any products matching your search. Try updating your criteria—for example, a different style, price range, or brand—and I'll search again.";
+        const resultsContent =
+          count > 0
+            ? `Here are ${count} ${count === 1 ? 'option' : 'options'} that might work for you. Need a different price range, style, or brand? Just tell me what you'd like to change and I'll refine the search.`
+            : noResultsContent;
+          const resultsMessage = {
             id: Date.now().toString(),
-            role: 'assistant',
-            content: `Found ${event.data.products.length} products:`,
+            role: 'assistant' as const,
+            content: resultsContent,
             timestamp: new Date(),
-            products: event.data.products as ProductResult[],
+            ...(count > 0 && { products }),
+          };
+          setMessages((prev) => {
+            const withoutProgress = prev.filter(
+              (m) => !(m.role === 'system' && typeof m.content === 'string' && m.content.startsWith('⏳ '))
+            );
+            const last = withoutProgress[withoutProgress.length - 1];
+            const lastIsAssistant = last?.role === 'assistant';
+            const alreadyHasSameResults = lastIsAssistant && count > 0 && last.products && last.products.length === count;
+            if (alreadyHasSameResults) return prev;
+            if (lastIsAssistant) {
+              return withoutProgress.map((m, i) =>
+                i === withoutProgress.length - 1
+                  ? { ...m, content: resultsMessage.content, products: resultsMessage.products, isStreaming: false }
+                  : m
+              );
+            }
+            return [...withoutProgress, resultsMessage];
           });
+          streamingMessageRef.current = null;
         }
         break;
 
@@ -124,6 +171,11 @@ export const useWebSocket = (sessionId: string, userId: string): UseWebSocketRet
           streamingMessageRef.current = null;
         }
         setCurrentStage(WorkflowStage.COMPLETED);
+        setMessages((prev) =>
+          prev.filter(
+            (m) => !(m.role === 'system' && typeof m.content === 'string' && m.content.startsWith('⏳ '))
+          )
+        );
         break;
 
       case EventType.ERROR:
@@ -161,25 +213,29 @@ export const useWebSocket = (sessionId: string, userId: string): UseWebSocketRet
     };
   }, [sessionId, userId, handleEvent]);
 
-  const sendMessage = useCallback((text: string) => {
+  const sendMessage = useCallback((text: string, media?: { media_type: 'image' | 'audio' | 'video'; s3_key: string; content_type: string; size_bytes: number }[]) => {
     if (!clientRef.current || !clientRef.current.isConnected()) {
       setError('Not connected to server');
       return;
     }
 
     try {
-      // Add user message to UI
+      const attachmentLabel = (type: 'image' | 'audio' | 'video') =>
+        type === 'audio' ? 'Voice message' : type === 'image' ? 'Photo' : 'Video';
+      const displayContent = text || (media && media.length > 0
+        ? media.length === 1
+          ? attachmentLabel(media[0].media_type)
+          : media.map(m => attachmentLabel(m.media_type)).join(', ').replace(/, ([^,]+)$/, ' and $1')
+        : '');
       addMessage({
         id: Date.now().toString(),
         role: 'user',
-        content: text,
+        content: displayContent,
         timestamp: new Date(),
+        attachedMedia: media?.map(m => ({ media_type: m.media_type })),
       });
 
-      // Send via WebSocket
-      clientRef.current.sendChatMessage(text);
-      
-      // Reset streaming ref
+      clientRef.current.sendChatMessage(text, media);
       streamingMessageRef.current = null;
     } catch (err) {
       console.error('Failed to send message:', err);

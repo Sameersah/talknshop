@@ -22,7 +22,7 @@ Rules:
 2. If there is an image attached AND the user seems to be describing a product or asking about something visual, we should analyze it
 3. If the text message is already clear and complete, we can skip media processing
 
-Respond ONLY with valid JSON in this exact format:
+Respond ONLY with valid JSON in this exact format. Your entire response must be parseable JSON (no text before or after). You may wrap the JSON in a ```json code block if you prefer.
 {{
   "need_stt": true/false,
   "need_vision": true/false,
@@ -62,6 +62,8 @@ IMPORTANT:
 - Don't remove information unless explicitly contradicted
 - Be specific with measurements and numbers
 - If unsure about a value, omit it rather than guessing
+
+OUTPUT FORMAT: You must respond with valid JSON only. Your entire response must be parseable by a JSON parser (no explanatory text before or after). You may wrap the JSON in a ```json code block; the content inside must be valid JSON. Do not return empty or non-JSON text.
 
 Respond ONLY with valid JSON in this exact format:
 {{
@@ -109,7 +111,7 @@ Guidelines:
 4. Don't exceed 2 clarifying questions
 5. If user gave detailed info, proceed to search even if some details missing
 
-Respond ONLY with valid JSON:
+OUTPUT FORMAT: Respond with valid JSON only (parseable by a JSON parser; no text before or after). You may use a ```json code block.
 {{
   "needs_clarification": true/false,
   "reason": "brief explanation of what's missing or why we can proceed",
@@ -150,11 +152,12 @@ Examples:
 Good: "What's your budget for the laptop?"
 Good: "Are you looking for new or used condition?"
 Good: "Any preferred brands? (e.g., Apple, Dell, HP)"
+Good: "What color would you like? (e.g., black, navy, gray)" — use when clarification_reason mentions color or clothing/apparel.
 
 Bad: "What are all the specifications you need?" (too broad)
 Bad: "Do you want 16GB RAM, SSD storage, and dedicated graphics?" (multiple questions)
 
-Respond ONLY with valid JSON:
+OUTPUT FORMAT: Respond with valid JSON only (no text before or after; must be parseable JSON). You may wrap in a ```json code block.
 {{
   "question": "Your clarifying question here",
   "suggestions": ["option 1", "option 2", "option 3"],
@@ -212,8 +215,12 @@ def format_image_attrs_section(image_attrs: dict) -> str:
     
     labels = image_attrs.get("labels", [])
     text = image_attrs.get("text", [])
+    metadata = image_attrs.get("metadata") or {}
+    vision_desc = metadata.get("vision_description")
     
     parts = []
+    if vision_desc:
+        parts.append(f"Vision (product/clothing): {vision_desc}")
     if labels:
         parts.append(f"Image Labels: {', '.join(labels[:10])}")
     if text:
