@@ -198,9 +198,11 @@ async def parse_input(state: WorkflowState) -> WorkflowState:
         # Normalize user message
         user_message = state.get("user_message", "").strip()
         media_refs = state.get("media_refs", [])
-        
-        # Extract turn input
-        # TurnInput requires message; map from user_message
+
+        # ASL retry: when the ASL service returns "I didn't catch that sign clearly...",
+        # don't run it through requirement building; we'll reply with a short "try again" message.
+        asl_retry_requested = "didn't catch that sign clearly" in (user_message or "")
+
         turn_input = TurnInput(
             message=user_message,
             session_id=state["session_id"],
@@ -214,6 +216,7 @@ async def parse_input(state: WorkflowState) -> WorkflowState:
             "turn_input": turn_input,
             "user_message": user_message,
             "media_refs": media_refs,
+            "asl_retry_requested": asl_retry_requested,
             "clarification_count": state.get("clarification_count", 0),
             "node_trace": state.get("node_trace", []) + ["parse_input"],
             "updated_at": datetime.utcnow(),
@@ -884,6 +887,19 @@ async def rank_and_compose(state: WorkflowState) -> WorkflowState:
         state["ranked_results"] = []
         state["final_response"] = "An error occurred while ranking results."
         return state
+
+
+async def asl_retry_reply(state: WorkflowState) -> WorkflowState:
+    """
+    Short-circuit when the ASL service returned "I didn't catch that sign clearly".
+    Reply with a simple message and go to done (no requirement building).
+    """
+    logger.info("ASL retry: replying with try-again message (skipping requirement building)")
+    state.update({
+        "final_response": "I didn't catch that sign clearly. Please try your sign again with a clear, full sign in good lighting.",
+        "node_trace": state.get("node_trace", []) + ["asl_retry_reply"],
+    })
+    return state
 
 
 async def done(state: WorkflowState) -> WorkflowState:

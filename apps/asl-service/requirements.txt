@@ -3,3 +3,8 @@ uvicorn[standard]==0.30.6
 pydantic==2.9.2
 python-dotenv==1.0.1
 python-multipart==0.0.9
+# WLASL / I3D inference (open-source fallback path)
+torch
+torchvision
+numpy
+opencv-python

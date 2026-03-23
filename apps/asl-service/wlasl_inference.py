@@ -402,19 +402,47 @@ class WLASLRecognizer:
         clip = _video_to_tensor(frames).to(self.device)  # (1, C, T, H, W)
 
         with torch.no_grad():
-            # Model returns logits with shape (B, T, num_classes)
             logits = self.model(clip)  # type: ignore[call-arg]
-            # Aggregate over time dimension T.
+            # Different I3D forks expose either (B, T, C) or (B, C, T).
+            # We detect where the class dimension is (matches class-list size)
+            # and pool only along the temporal axis.
             if logits.ndim == 3:
-                # (1, T, C) → (C,)
-                if self.logit_agg == "max":
-                    logits_agg = logits.max(dim=1)[0][0]
+                # Remove batch dim (B=1): shape is either (T, C) or (C, T)
+                logits_2d = logits[0]
+                num_classes = len(self.idx_to_gloss)
+
+                if logits_2d.shape[0] == num_classes and logits_2d.shape[1] != num_classes:
+                    # (C, T) -> pool over T (dim=1)
+                    if self.logit_agg == "max":
+                        logits_agg = logits_2d.max(dim=1)[0]
+                    else:
+                        logits_agg = logits_2d.mean(dim=1)
+                elif logits_2d.shape[1] == num_classes and logits_2d.shape[0] != num_classes:
+                    # (T, C) -> pool over T (dim=0)
+                    if self.logit_agg == "max":
+                        logits_agg = logits_2d.max(dim=0)[0]
+                    else:
+                        logits_agg = logits_2d.mean(dim=0)
                 else:
-                    logits_agg = logits.mean(dim=1)[0]
+                    # Defensive fallback: assume larger axis is class axis, pool the other.
+                    class_axis = 0 if logits_2d.shape[0] >= logits_2d.shape[1] else 1
+                    time_axis = 1 - class_axis
+                    if self.logit_agg == "max":
+                        logits_agg = logits_2d.max(dim=time_axis)[0]
+                    else:
+                        logits_agg = logits_2d.mean(dim=time_axis)
+                    logger.warning(
+                        "Ambiguous logits layout %s; inferred class_axis=%d time_axis=%d",
+                        tuple(logits_2d.shape),
+                        class_axis,
+                        time_axis,
+                    )
             elif logits.ndim == 2:
+                # (B, C)
                 logits_agg = logits[0]
             else:  # pragma: no cover - defensive
                 logits_agg = logits.view(-1)
+
             probs = F.softmax(logits_agg, dim=0)
 
         k = max(self.alternatives_k, 5)

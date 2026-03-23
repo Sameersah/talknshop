@@ -385,13 +385,22 @@ async def ollama_status():
         loop = asyncio.get_event_loop()
         models_response = await loop.run_in_executor(None, lambda: client.list())
         models = getattr(models_response, "models", None) or []
-        model_names = [getattr(m, "name", m) for m in models] if models else []
+        # Ollama client may return objects with .model / .name or dicts with "model" / "name"
+        def _model_name(m):
+            if hasattr(m, "model") and m.model:
+                return str(m.model).strip()
+            if hasattr(m, "name") and m.name:
+                return str(m.name).strip()
+            if isinstance(m, dict):
+                return str(m.get("model") or m.get("name") or "").strip()
+            return ""
+        model_names = [n for n in (_model_name(m) for m in models) if n]
         result["models"] = model_names
         configured_base = (configured or "").split(":")[0]
         result["available"] = any(
-            (getattr(m, "name", "") or "").startswith(configured_base) or (configured in (getattr(m, "name", "") or ""))
-            for m in models
-        ) if models else False
+            (name and (name == configured or name.startswith(configured_base) or configured in name))
+            for name in model_names
+        ) if model_names else False
         if not result["available"] and model_names:
             result["error"] = f"Configured model {configured!r} not in list. Available: {model_names[:15]}"
         elif not model_names:

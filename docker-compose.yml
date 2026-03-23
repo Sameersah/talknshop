@@ -45,6 +45,11 @@ services:
       - "8004:8004"
     env_file:
       - ./apps/asl-service/.env
+    volumes:
+      # Mount the WLASL repo so the container can import I3D code and class lists
+      - ../WLASL:/app/WLASL:ro
+      # Mount the pretrained WLASL I3D checkpoint used by ASL_MODEL_PATH
+      - /Users/rutujanemane/Documents/SJSU/SEM3/295A/WLASL/code/I3D/archived/asl2000/FINAL_nslt_2000_iters=5104_top1=32.48_top5=57.31_top10=66.31.pt:/app/models/wlasl_nslt_2000.pt:ro
     networks:
       - talknshop-network
 

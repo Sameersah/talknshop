@@ -25,6 +25,10 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   error,
   currentStage,
 }) => {
+  const latestClarificationQuestion = [...messages]
+    .reverse()
+    .find((m) => m.role === 'assistant' && m.clarificationQuestion)?.clarificationQuestion;
+
   return (
     <div className="flex flex-col h-screen bg-[#f8f7fc]">
       {/* Header: minimal, consistent height, clear hierarchy */}
@@ -58,6 +62,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           <MessageInput
             onSend={sendMessage}
             disabled={!connected || connecting}
+            clarificationQuestion={latestClarificationQuestion}
           />
         </div>
       </div>

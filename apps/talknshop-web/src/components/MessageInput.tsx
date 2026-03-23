@@ -6,6 +6,60 @@
 import React, { useState, useRef, useCallback, KeyboardEvent, useEffect } from 'react';
 import { Mic, Video, ImagePlus, Send, X, Square, Upload, MessageSquare } from 'lucide-react';
 import { uploadMediaFile } from '../services/mediaService';
+import { recognizeAslVideo, type AslRecognitionOutcome } from '../services/aslService';
+
+function aslDebugHint(outcome: AslRecognitionOutcome): string {
+  const alts = outcome.alternatives?.slice(0, 5) ?? [];
+  const altStr = alts.map((a) => `${a.gloss} ${(a.confidence * 100).toFixed(0)}%`).join(' · ');
+  const dec = outcome.decision ?? '—';
+  return altStr ? `${dec}: ${altStr}` : String(dec);
+}
+
+function getFollowupChips(outcome: AslRecognitionOutcome): string[] {
+  const seed = `${outcome.transcript} ${(outcome.alternatives ?? [])
+    .map((a) => `${a.gloss} ${a.query}`)
+    .join(' ')}`.toLowerCase();
+
+  if (/(shoe|sneaker|boot|slipper|heel|footwear)/.test(seed)) {
+    return [
+      'running shoes under $100',
+      'casual sneakers under $80',
+      'formal black shoes',
+      'women size 7',
+      'men size 10',
+      'nike shoes under $120',
+    ];
+  }
+  if (/(book|novel|textbook|guide)/.test(seed)) {
+    return [
+      'fiction books under $20',
+      'self-help bestsellers',
+      'python programming book',
+      'kids books age 8-10',
+      'exam prep books',
+      'hardcover only',
+    ];
+  }
+  if (/(computer|laptop)/.test(seed)) {
+    return [
+      'laptop under $700',
+      'gaming laptop under $1200',
+      'lightweight for college',
+      '16GB RAM',
+      'MacBook alternatives',
+      'battery life 10+ hours',
+    ];
+  }
+
+  return [
+    'under $100',
+    'best rated',
+    'budget option',
+    'premium option',
+    'popular brands',
+    'fast delivery',
+  ];
+}
 
 export type MediaItem = {
   media_type: 'image' | 'audio' | 'video';
@@ -19,6 +73,7 @@ export type MediaItem = {
 interface MessageInputProps {
   onSend: (text: string, media?: MediaItem[]) => void;
   disabled: boolean;
+  clarificationQuestion?: string;
 }
 
 const ACCEPT_IMAGES = 'image/*';
@@ -37,7 +92,30 @@ function mediaTypeFromFile(file: File): 'image' | 'audio' | 'video' {
 
 const ICON_BTN = 'flex-shrink-0 w-11 h-11 rounded-xl flex items-center justify-center border border-gray-200 bg-white text-gray-500 hover:bg-gray-50 hover:text-violet-600 hover:border-violet-200 transition-colors disabled:opacity-50';
 
-export const MessageInput: React.FC<MessageInputProps> = ({ onSend, disabled }) => {
+function getClarificationChips(question?: string): string[] {
+  const q = (question ?? '').toLowerCase();
+  if (!q) return [];
+
+  if (/(color|colour)/.test(q)) {
+    return ['Black', 'White', 'Blue', 'No color preference'];
+  }
+  if (/(budget|price|under|cost)/.test(q)) {
+    return ['Under $50', 'Under $100', 'Under $150', 'No strict budget'];
+  }
+  if (/(size|sized?)/.test(q)) {
+    return ['Size 7', 'Size 8', 'Size 9', 'Not sure yet'];
+  }
+  if (/(brand|make)/.test(q)) {
+    return ['Nike', 'Adidas', 'Puma', 'No brand preference'];
+  }
+  if (/(type|style|kind)/.test(q)) {
+    return ['Running', 'Casual', 'Formal', 'No preference'];
+  }
+
+  return ['No preference', 'Most popular options', 'Best rated', 'Budget-friendly'];
+}
+
+export const MessageInput: React.FC<MessageInputProps> = ({ onSend, disabled, clarificationQuestion }) => {
   const [message, setMessage] = useState('');
   const [attached, setAttached] = useState<MediaItem[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -47,9 +125,14 @@ export const MessageInput: React.FC<MessageInputProps> = ({ onSend, disabled }) 
   const [isRecordingVideo, setIsRecordingVideo] = useState(false);
   const [noteBoxOpen, setNoteBoxOpen] = useState(false);
   const [aslPanelOpen, setAslPanelOpen] = useState(false);
+  const [aslStatus, setAslStatus] = useState<string | null>(null);
+  /** After ASL /predict: let user pick a candidate or type a word (WLASL often misses live "shoes"). */
+  const [aslDisambiguation, setAslDisambiguation] = useState<AslRecognitionOutcome | null>(null);
+  const [aslManualOverride, setAslManualOverride] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const chatTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const videoPreviewRef = useRef<HTMLVideoElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -60,10 +143,61 @@ export const MessageInput: React.FC<MessageInputProps> = ({ onSend, disabled }) 
     }
   }, [noteBoxOpen]);
 
+  // When assistant asks a follow-up clarification, prioritize quick-reply chips.
+  useEffect(() => {
+    if (!clarificationQuestion) return;
+    setAslPanelOpen(false);
+  }, [clarificationQuestion]);
+
   const stopStream = useCallback(() => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
+    if (videoPreviewRef.current) {
+      // Clear the preview when the stream stops
+      videoPreviewRef.current.srcObject = null;
+    }
   }, []);
+
+  const clearAslDisambiguation = useCallback(() => {
+    setAslDisambiguation(null);
+    setAslManualOverride('');
+  }, []);
+
+  /** If model returns several guesses or wasn't sure, let user pick (or type "shoes"). */
+  const applyAslOutcome = useCallback(
+    (outcome: AslRecognitionOutcome) => {
+      const alts = outcome.alternatives ?? [];
+      const uncertain = outcome.decision !== 'accepted';
+      if (alts.length >= 2 || uncertain) {
+        setAslDisambiguation(outcome);
+        setAslManualOverride('');
+        setAslStatus(
+          uncertain
+            ? 'Model was unsure — tap the closest word, type one (e.g. shoes), or use its top choice.'
+            : 'Tap the word you meant, or type one if it’s not listed.',
+        );
+        return;
+      }
+      onSend(outcome.transcript);
+      setAslStatus(
+        import.meta.env.DEV && alts.length
+          ? aslDebugHint(outcome)
+          : 'ASL video recognized',
+      );
+    },
+    [onSend],
+  );
+
+  const confirmAslPick = useCallback(
+    (text: string) => {
+      const t = text.trim();
+      if (!t) return;
+      onSend(t);
+      clearAslDisambiguation();
+      setAslStatus(`Sent: ${t}`);
+    },
+    [onSend, clearAslDisambiguation],
+  );
 
 
   const startAudioRecording = useCallback(async () => {
@@ -114,6 +248,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({ onSend, disabled }) 
   const startVideoRecording = useCallback(async () => {
     if (disabled || uploading || isRecordingAudio || isRecordingVideo) return;
     setRecordError(null);
+    setAslStatus('Recording ASL video…');
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
       streamRef.current = stream;
@@ -128,15 +263,18 @@ export const MessageInput: React.FC<MessageInputProps> = ({ onSend, disabled }) 
         stopStream();
         const blob = new Blob(chunksRef.current, { type: recorder.mimeType || 'video/webm' });
         const file = new File([blob], VIDEO_FILENAME, { type: blob.type });
+        // Phase 1 ASL flow: send video to ASL service to get transcript,
+        // then send transcript as a normal text message (no video attachment).
         setUploading(true);
+        setAslStatus('Uploading and recognizing ASL video…');
         try {
-          const { s3_key } = await uploadMediaFile(file, 'video');
-          setAttached((prev) => [
-            ...prev,
-            { media_type: 'video', s3_key, content_type: file.type, size_bytes: file.size },
-          ]);
+          const outcome = await recognizeAslVideo(file);
+          applyAslOutcome(outcome);
         } catch (err) {
-          setUploadError(err instanceof Error ? err.message : 'Upload failed');
+          const msg =
+            err instanceof Error ? err.message : 'ASL recognition failed. Please try again.';
+          setUploadError(msg);
+          setAslStatus(null);
         } finally {
           setUploading(false);
         }
@@ -147,23 +285,34 @@ export const MessageInput: React.FC<MessageInputProps> = ({ onSend, disabled }) 
       setRecordError(err instanceof Error ? err.message : 'Camera/mic access denied');
       stopStream();
     }
-  }, [disabled, uploading, isRecordingAudio, isRecordingVideo, stopStream]);
+  }, [disabled, uploading, isRecordingAudio, isRecordingVideo, stopStream, applyAslOutcome]);
+
+  // Attach the active stream to the preview once recording starts and the video element is mounted
+  useEffect(() => {
+    if (isRecordingVideo && videoPreviewRef.current && streamRef.current) {
+      const videoEl = videoPreviewRef.current;
+      // @ts-expect-error srcObject is not in the standard DOM typings
+      videoEl.srcObject = streamRef.current;
+      videoEl.muted = true;
+      videoEl
+        .play()
+        .catch(() => {
+          // Autoplay may require interaction; ignore play errors.
+        });
+    }
+  }, [isRecordingVideo]);
 
   const stopVideoRecording = useCallback(() => {
     if (!isRecordingVideo || !mediaRecorderRef.current) return;
     mediaRecorderRef.current.stop();
     mediaRecorderRef.current = null;
     setIsRecordingVideo(false);
+    // Keep current aslStatus (it will move to "Uploading and recognizing…" in onstop).
   }, [isRecordingVideo]);
 
   const handleAttachImage = () => {
     if (disabled || uploading) return;
     fileInputRef.current?.click();
-  };
-
-  const handleAttachVideo = () => {
-    if (disabled || uploading) return;
-    videoInputRef.current?.click();
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -176,17 +325,31 @@ export const MessageInput: React.FC<MessageInputProps> = ({ onSend, disabled }) 
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         const mediaType = mediaTypeFromFile(file);
-        const { s3_key } = await uploadMediaFile(file, mediaType);
-        const item: MediaItem = {
-          media_type: mediaType,
-          s3_key,
-          content_type: file.type,
-          size_bytes: file.size,
-        };
-        if (mediaType === 'image') {
-          item.previewUrl = URL.createObjectURL(file);
+        if (mediaType === 'video') {
+          // Treat uploaded video from ASL panel as ASL input: call ASL service directly.
+          try {
+            setAslStatus('Uploading and recognizing ASL video…');
+            const outcome = await recognizeAslVideo(file);
+            applyAslOutcome(outcome);
+          } catch (err) {
+            const msg =
+              err instanceof Error ? err.message : 'ASL recognition failed. Please try again.';
+            setUploadError(msg);
+            setAslStatus(null);
+          }
+        } else {
+          const { s3_key } = await uploadMediaFile(file, mediaType);
+          const item: MediaItem = {
+            media_type: mediaType,
+            s3_key,
+            content_type: file.type,
+            size_bytes: file.size,
+          };
+          if (mediaType === 'image') {
+            item.previewUrl = URL.createObjectURL(file);
+          }
+          newMedia.push(item);
         }
-        newMedia.push(item);
       }
       setAttached((prev) => [...prev, ...newMedia]);
     } catch (err) {
@@ -210,6 +373,15 @@ export const MessageInput: React.FC<MessageInputProps> = ({ onSend, disabled }) 
     setMessage('');
     setAttached([]);
   };
+
+  const sendQuickReply = useCallback(
+    (text: string) => {
+      if (disabled || uploading || !text.trim()) return;
+      onSend(text.trim());
+      setMessage('');
+    },
+    [disabled, uploading, onSend],
+  );
 
   const canSend =
     (message.trim().length > 0 || attached.length > 0) && !disabled && !uploading;
@@ -271,34 +443,151 @@ export const MessageInput: React.FC<MessageInputProps> = ({ onSend, disabled }) 
 
       {/* ASL panel: record or upload video — appears above when ASL icon is opened */}
       {aslPanelOpen && (
-        <div className="flex flex-wrap gap-2 items-center">
-          <button
-            type="button"
-            onClick={isRecordingVideo ? stopVideoRecording : startVideoRecording}
-            disabled={disabled || uploading || isRecordingAudio}
-            title={isRecordingVideo ? 'Stop ASL video' : 'Record ASL video'}
-            className={`flex-shrink-0 w-12 h-12 rounded-xl flex items-center justify-center transition-all ${
-              isRecordingVideo
-                ? 'bg-red-500 text-white hover:bg-red-600 animate-pulse'
-                : 'bg-teal-500 text-white hover:bg-teal-600'
-            }`}
-          >
-            {isRecordingVideo ? (
-              <Square className="w-5 h-5" fill="currentColor" />
-            ) : (
-              <Video className="w-5 h-5" />
+        <div className="flex flex-col gap-1">
+          <div className="flex flex-wrap gap-3 items-center">
+            <button
+              type="button"
+              onClick={isRecordingVideo ? stopVideoRecording : startVideoRecording}
+              disabled={disabled || uploading || isRecordingAudio}
+              title={isRecordingVideo ? 'Stop ASL video' : 'Record ASL video'}
+              className={`flex-shrink-0 w-12 h-12 rounded-xl flex items-center justify-center transition-all ${
+                isRecordingVideo
+                  ? 'bg-red-500 text-white hover:bg-red-600 animate-pulse'
+                  : 'bg-teal-500 text-white hover:bg-teal-600'
+              }`}
+            >
+              {isRecordingVideo ? (
+                <Square className="w-5 h-5" fill="currentColor" />
+              ) : (
+                <Video className="w-5 h-5" />
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => videoInputRef.current?.click()}
+              disabled={disabled || uploading || isRecording}
+              className={`${ICON_BTN} hover:text-teal-600`}
+              title="Upload ASL video"
+            >
+              <Upload className="w-5 h-5" />
+            </button>
+            <span className="text-xs text-gray-500">Record or upload ASL video</span>
+            {isRecordingVideo && (
+              <video
+                ref={videoPreviewRef}
+                className="w-32 h-24 rounded-lg border border-gray-200 bg-black object-cover"
+                autoPlay
+                playsInline
+                muted
+              />
             )}
-          </button>
-          <button
-            type="button"
-            onClick={() => videoInputRef.current?.click()}
-            disabled={disabled || uploading || isRecording}
-            className={`${ICON_BTN} hover:text-teal-600`}
-            title="Upload ASL video"
-          >
-            <Upload className="w-5 h-5" />
-          </button>
-          <span className="text-xs text-gray-500">Record or upload ASL video</span>
+          </div>
+          {aslStatus && (
+            <p className="text-xs text-teal-700">
+              {aslStatus}
+            </p>
+          )}
+          {aslDisambiguation && (
+            <div
+              className="flex flex-col gap-2 mt-1 p-3 rounded-xl border border-teal-200 bg-teal-50/80"
+              role="region"
+              aria-label="Choose ASL search word"
+            >
+              <p className="text-xs font-medium text-gray-800">Choose what to search</p>
+              <div className="flex flex-wrap gap-2">
+                {(aslDisambiguation.alternatives ?? []).slice(0, 8).map((a, i) => (
+                  <button
+                    key={`${a.gloss}-${i}-${a.query}`}
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => confirmAslPick(a.query)}
+                    className="px-2.5 py-1 rounded-lg text-xs font-medium bg-white border border-teal-300 text-gray-800 hover:bg-teal-100 disabled:opacity-50"
+                  >
+                    {a.gloss}{' '}
+                    <span className="text-gray-500 font-normal">({(a.confidence * 100).toFixed(0)}%)</span>
+                  </button>
+                ))}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  type="text"
+                  value={aslManualOverride}
+                  onChange={(e) => setAslManualOverride(e.target.value)}
+                  placeholder="Not listed? e.g. shoes, sneakers"
+                  disabled={disabled}
+                  className="flex-1 min-w-[8rem] px-2 py-1.5 text-xs border border-gray-300 rounded-lg"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      confirmAslPick(aslManualOverride);
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  disabled={disabled || !aslManualOverride.trim()}
+                  onClick={() => confirmAslPick(aslManualOverride)}
+                  className="px-2 py-1.5 text-xs rounded-lg bg-teal-600 text-white disabled:opacity-50"
+                >
+                  Send typed
+                </button>
+              </div>
+              <div className="flex flex-col gap-1">
+                <p className="text-[11px] text-gray-600">Quick picks</p>
+                <div className="flex flex-wrap gap-2">
+                  {getFollowupChips(aslDisambiguation).map((chip) => (
+                    <button
+                      key={chip}
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => confirmAslPick(chip)}
+                      className="px-2.5 py-1 rounded-lg text-xs font-medium bg-white border border-teal-200 text-gray-700 hover:bg-teal-100 disabled:opacity-50"
+                    >
+                      {chip}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2 items-center">
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => confirmAslPick(aslDisambiguation.transcript)}
+                  className="text-xs text-teal-800 underline hover:no-underline"
+                >
+                  Use model top choice: &quot;{aslDisambiguation.transcript}&quot;
+                </button>
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={clearAslDisambiguation}
+                  className="text-xs text-gray-600 underline hover:no-underline"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Clarification quick replies for tap-first flow */}
+      {clarificationQuestion && (
+        <div className="flex flex-col gap-2 p-3 rounded-xl border border-violet-200 bg-violet-50/70">
+          <p className="text-xs font-medium text-gray-800">Quick options</p>
+          <div className="flex flex-wrap gap-2">
+            {getClarificationChips(clarificationQuestion).map((chip) => (
+              <button
+                key={chip}
+                type="button"
+                disabled={disabled || uploading}
+                onClick={() => sendQuickReply(chip)}
+                className="px-2.5 py-1 rounded-lg text-xs font-medium bg-white border border-violet-200 text-gray-800 hover:bg-violet-100 disabled:opacity-50"
+              >
+                {chip}
+              </button>
+            ))}
+          </div>
         </div>
       )}
 

@@ -3,8 +3,15 @@ Pydantic models for ASL recognition API.
 Contract aligned with ASL_INTEGRATION_TECHNICAL_DESIGN.md for media-service integration.
 """
 
-from typing import Optional
+from typing import List, Optional
 from pydantic import BaseModel, Field
+
+
+class ASLAlternative(BaseModel):
+    """One candidate gloss from the WLASL classifier (for debugging / disambiguation)."""
+    gloss: str = Field(..., description="WLASL gloss label")
+    query: str = Field(..., description="Mapped shopping query (synonyms applied)")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Softmax probability for this class")
 
 
 class ASLRecognizeRequest(BaseModel):
@@ -19,6 +26,14 @@ class ASLRecognizeResponse(BaseModel):
     confidence: Optional[float] = Field(None, ge=0.0, le=1.0, description="Confidence score 0-1 if available")
     provider: Optional[str] = Field(None, description="Backend used: stub, wlasl, etc.")
     processing_time_seconds: Optional[float] = Field(None, description="Processing time in seconds")
+    alternatives: Optional[List[ASLAlternative]] = Field(
+        None,
+        description="Top-k gloss candidates with probabilities (WLASL mode; empty for stub)",
+    )
+    decision: Optional[str] = Field(
+        None,
+        description="accepted | below_confidence | ambiguous_margin | error_fallback | stub",
+    )
 
 
 class HealthResponse(BaseModel):

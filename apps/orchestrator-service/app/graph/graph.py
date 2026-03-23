@@ -29,6 +29,7 @@ from app.graph.nodes import (
     ask_clarifying_question,
     search_marketplaces,
     rank_and_compose,
+    asl_retry_reply,
     done,
 )
 
@@ -65,6 +66,15 @@ def should_clarify(state: WorkflowState) -> Literal["ask_clarifying_q", "search_
     return "ask_clarifying_q" if state.get("needs_clarification", False) else "search_marketplaces"
 
 
+def after_parse_input(state: WorkflowState) -> Literal["asl_retry_reply", "need_media_ops"]:
+    """If ASL service asked user to try again, reply and skip the rest of the graph."""
+    if state.get("asl_retry_requested", False):
+        logger.info("Graph: parse_input -> asl_retry_reply (ASL try-again message)")
+        return "asl_retry_reply"
+    logger.info("Graph: parse_input -> need_media_ops")
+    return "need_media_ops"
+
+
 def build_buyer_flow_graph() -> StateGraph:
     """
     Build and compile the buyer flow state graph.
@@ -87,14 +97,24 @@ def build_buyer_flow_graph() -> StateGraph:
     graph.add_node("ask_clarifying_q", ask_clarifying_question)
     graph.add_node("search_marketplaces", search_marketplaces)
     graph.add_node("rank_and_compose", rank_and_compose)
+    graph.add_node("asl_retry_reply", asl_retry_reply)
     graph.add_node("done", done)
     
     # Set entry point
     graph.set_entry_point("parse_input")
     
-    # Define edges
-    # parse_input -> need_media_ops
-    graph.add_edge("parse_input", "need_media_ops")
+    # parse_input -> [asl_retry_reply | need_media_ops] (conditional)
+    graph.add_conditional_edges(
+        "parse_input",
+        after_parse_input,
+        {
+            "asl_retry_reply": "asl_retry_reply",
+            "need_media_ops": "need_media_ops",
+        },
+    )
+    
+    # asl_retry_reply -> done (short-circuit for ASL "try again" message)
+    graph.add_edge("asl_retry_reply", "done")
     
     # need_media_ops -> [transcribe_audio | extract_image_attrs | build_requirement] (conditional)
     graph.add_conditional_edges(

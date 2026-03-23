@@ -6,7 +6,6 @@ Returns { transcript, confidence } for integration with media-service.
 Stub implementation by default; set ASL_USE_STUB=0 and provide model path for WLASL inference.
 """
 
-import io
 import logging
 import os
 import time
@@ -16,7 +15,8 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-from models import ASLRecognizeRequest, ASLRecognizeResponse, HealthResponse
+from models import ASLAlternative, ASLRecognizeRequest, ASLRecognizeResponse, HealthResponse
+from wlasl_inference import ASLRecognitionResult, WLASLInitError, WLASLRecognizer
 
 load_dotenv()
 
@@ -48,13 +48,62 @@ PORT = int(os.getenv("PORT", "8004"))
 ALLOWED_VIDEO_EXTENSIONS = {"mp4", "webm", "mov"}
 
 
+_wlasl_recognizer: Optional[WLASLRecognizer] = None
+
+
+def _load_wlasl_if_configured() -> Optional[WLASLRecognizer]:
+    """
+    Lazily initialize the WLASL recognizer when not in stub mode.
+
+    If initialization fails, log and fall back to stub behavior.
+    """
+    global _wlasl_recognizer
+    if _wlasl_recognizer is not None:
+        return _wlasl_recognizer
+
+    if not ASL_MODEL_PATH:
+        logger.warning("ASL_MODEL_PATH is not set; staying in stub mode")
+        return None
+
+    try:
+        _wlasl_recognizer = WLASLRecognizer.from_env()
+        logger.info("WLASLRecognizer loaded successfully")
+    except WLASLInitError as e:
+        logger.error("Failed to initialize WLASLRecognizer: %s", e)
+        _wlasl_recognizer = None
+    except Exception as e:  # pragma: no cover - defensive
+        logger.exception("Unexpected error initializing WLASLRecognizer: %s", e)
+        _wlasl_recognizer = None
+
+    return _wlasl_recognizer
+
+
 def _stub_recognize(video_bytes: bytes, content_type: str) -> ASLRecognizeResponse:
     """Return a mock transcript for prototype/testing. Replace with WLASL inference later."""
     return ASLRecognizeResponse(
-        transcript="[ASL stub] find me a laptop under 1000 dollars",
+        # Keep the stub simple so the UI shows a natural query.
+        transcript="find me a laptop under 1000 dollars",
         confidence=0.92,
         provider="stub",
         processing_time_seconds=0.01,
+        alternatives=None,
+        decision="stub",
+    )
+
+
+def _wlasl_result_to_response(result: ASLRecognitionResult, elapsed: float) -> ASLRecognizeResponse:
+    """Map WLASLRecognitionResult to API contract."""
+    alts = [
+        ASLAlternative(gloss=g, query=q, confidence=c)
+        for g, q, c in result.alternatives
+    ]
+    return ASLRecognizeResponse(
+        transcript=result.transcript,
+        confidence=result.confidence,
+        provider=result.provider,
+        processing_time_seconds=elapsed,
+        alternatives=alts or None,
+        decision=result.decision,
     )
 
 
@@ -64,7 +113,7 @@ async def health():
     return HealthResponse(
         status="healthy",
         service="asl-service",
-        model_loaded=not ASL_USE_STUB and bool(ASL_MODEL_PATH),
+        model_loaded=bool(_load_wlasl_if_configured()) if not ASL_USE_STUB else False,
     )
 
 
@@ -90,8 +139,23 @@ async def predict(video: UploadFile = File(...)):
     if ASL_USE_STUB:
         result = _stub_recognize(body, video.content_type or "")
     else:
-        # TODO: load video, run WLASL I3D/Pose-TGCN, return transcript
-        result = _stub_recognize(body, video.content_type or "")
+        recognizer = _load_wlasl_if_configured()
+        if not recognizer:
+            # If model failed to load, fall back to stub so the UI continues to work.
+            logger.warning("WLASL model not available; falling back to stub recognition")
+            result = _stub_recognize(body, video.content_type or "")
+        else:
+            try:
+                wlasl_out = recognizer.recognize(body, video.content_type or "")
+            except Exception as e:
+                logger.exception("WLASL recognition failed; falling back to stub: %s", e)
+                result = _stub_recognize(body, video.content_type or "")
+                result = result.model_copy(
+                    update={"decision": "error_fallback", "alternatives": None}
+                )
+            else:
+                elapsed = round(time.perf_counter() - start, 2)
+                return _wlasl_result_to_response(wlasl_out, elapsed)
 
     elapsed = round(time.perf_counter() - start, 2)
     return result.model_copy(update={"processing_time_seconds": elapsed})
@@ -110,6 +174,8 @@ async def predict_s3(payload: ASLRecognizeRequest):
         confidence=0.0,
         provider="stub",
         processing_time_seconds=0.0,
+        alternatives=None,
+        decision="stub",
     )
 
 

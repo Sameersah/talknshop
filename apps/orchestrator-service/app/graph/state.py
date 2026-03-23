@@ -76,6 +76,9 @@ class WorkflowState(TypedDict, total=False):
     node_trace: list[str]  # Track node execution order
     llm_calls: list[dict[str, Any]]  # Log all LLM interactions
 
+    # ASL: when True, skip requirement building and reply with "try sign again"
+    asl_retry_requested: bool
+
 
 
 
