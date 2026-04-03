@@ -137,11 +137,13 @@ export const MessageInput: React.FC<MessageInputProps> = ({ onSend, disabled, cl
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
 
+  const textEntryVisible = noteBoxOpen || aslPanelOpen || !!clarificationQuestion;
+
   useEffect(() => {
-    if (noteBoxOpen) {
+    if (noteBoxOpen || aslPanelOpen) {
       chatTextareaRef.current?.focus({ preventScroll: true });
     }
-  }, [noteBoxOpen]);
+  }, [noteBoxOpen, aslPanelOpen]);
 
   // When assistant asks a follow-up clarification, prioritize quick-reply chips.
   useEffect(() => {
@@ -409,35 +411,53 @@ export const MessageInput: React.FC<MessageInputProps> = ({ onSend, disabled, cl
 
   const toggleNoteBox = () => {
     setNoteBoxOpen((o) => !o);
-    setAslPanelOpen(false);
   };
   const toggleAslPanel = () => {
     setAslPanelOpen((o) => !o);
-    setNoteBoxOpen(false);
   };
 
   return (
     <div className="flex flex-col gap-3">
-      {/* Persistent type box: appears above when Add note / Chat is opened; does not move the icon row */}
-      {noteBoxOpen && (
-        <div className="flex gap-2 items-end">
-          <textarea
-            ref={chatTextareaRef}
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            onKeyPress={handleKeyPress}
-            placeholder={disabled ? 'Connecting...' : 'Type your message…'}
-            disabled={disabled}
-            rows={2}
-            aria-label="Type your message"
-            className="flex-1 min-w-0 px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-400 focus:border-transparent resize-none bg-white text-gray-800 placeholder-gray-400 disabled:bg-gray-100"
-            style={{ minHeight: '56px', maxHeight: '120px' }}
-            onInput={(e) => {
-              const target = e.target as HTMLTextAreaElement;
-              target.style.height = '56px';
-              target.style.height = `${Math.min(target.scrollHeight, 120)}px`;
-            }}
-          />
+      {/* Type box: chat + ASL + follow-up questions — same field for text replies and typed search */}
+      {textEntryVisible && (
+        <div className="flex flex-col gap-1">
+          {aslPanelOpen && !noteBoxOpen && !clarificationQuestion && (
+            <p className="text-[11px] text-gray-500 px-0.5">
+              Type below or use record / upload for ASL — both work together.
+            </p>
+          )}
+          {clarificationQuestion && (
+            <p className="text-[11px] text-gray-600 px-0.5">
+              Type an answer or tap a quick option.
+            </p>
+          )}
+          <div className="flex gap-2 items-end">
+            <textarea
+              ref={chatTextareaRef}
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              onKeyPress={handleKeyPress}
+              placeholder={
+                disabled
+                  ? 'Connecting...'
+                  : clarificationQuestion
+                    ? 'Type your answer…'
+                    : aslPanelOpen
+                      ? 'Type your message or product search…'
+                      : 'Type your message…'
+              }
+              disabled={disabled}
+              rows={2}
+              aria-label="Type your message"
+              className="flex-1 min-w-0 px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-400 focus:border-transparent resize-none bg-white text-gray-800 placeholder-gray-400 disabled:bg-gray-100"
+              style={{ minHeight: '56px', maxHeight: '120px' }}
+              onInput={(e) => {
+                const target = e.target as HTMLTextAreaElement;
+                target.style.height = '56px';
+                target.style.height = `${Math.min(target.scrollHeight, 120)}px`;
+              }}
+            />
+          </div>
         </div>
       )}
 
@@ -687,9 +707,11 @@ export const MessageInput: React.FC<MessageInputProps> = ({ onSend, disabled, cl
             <button
               type="button"
               onClick={toggleNoteBox}
-              title={noteBoxOpen ? 'Close note' : 'Add note / type message'}
-              className={`${ICON_BTN} ${noteBoxOpen ? 'bg-violet-50 text-violet-600 border-violet-200' : ''}`}
-              aria-label={noteBoxOpen ? 'Close note' : 'Add note or type message'}
+              title={noteBoxOpen ? 'Hide type field' : 'Show type field'}
+              className={`${ICON_BTN} ${
+                noteBoxOpen || message.trim().length > 0 ? 'bg-violet-50 text-violet-600 border-violet-200' : ''
+              }`}
+              aria-label={noteBoxOpen ? 'Hide type field' : 'Show type field'}
               aria-pressed={noteBoxOpen}
             >
               <MessageSquare className="w-5 h-5" />
