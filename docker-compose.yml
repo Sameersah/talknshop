@@ -56,6 +56,8 @@ services:
       - ../WLASL:/app/WLASL:ro
       # Checkpoint: sibling WLASL repo (download + unzip per WLASL README → code/I3D/archived/...)
       - ../WLASL/code/I3D/archived/asl2000/FINAL_nslt_2000_iters=5104_top1=32.48_top5=57.31_top10=66.31.pt:/app/models/wlasl_nslt_2000.pt:ro
+      # Optional local ASL model assets (class lists, extra checkpoints)
+      - ./assets/asl-models:/assets/asl-models:ro
     networks:
       - talknshop-network
 

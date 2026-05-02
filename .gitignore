@@ -25,3 +25,9 @@ cdk.context.json
 # IDE
 .vscode/
 .idea/
+
+# Vendor WLASL clone (use sibling repo or submodule)
+assets/asl-models/WLASL/
+
+# Large pretrained bundle (exceeds GitHub 100MB limit; obtain separately)
+assets/asl-models/wlasl_i3d_pretrained.zip
