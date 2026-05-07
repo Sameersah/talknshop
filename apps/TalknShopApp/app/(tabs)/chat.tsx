@@ -13,7 +13,7 @@ import {
   Linking,
   ActivityIndicator,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '@/hooks/useTheme';
 import { useAuth } from '@/components/AuthProvider';
 import { Ionicons } from '@expo/vector-icons';
@@ -134,6 +134,45 @@ function pruneTrailingHiddenAssistant(items: ChatItem[]): ChatItem[] {
   return next;
 }
 
+type StarterIdea = {
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  title: string;
+  message: string;
+};
+
+const STARTER_IDEAS: StarterIdea[] = [
+  {
+    icon: 'football-outline',
+    title: 'Running shoes',
+    message: 'I need comfortable running shoes under $100',
+  },
+  {
+    icon: 'laptop-outline',
+    title: 'Student laptop',
+    message: 'Show me lightweight laptops for students under $800',
+  },
+  {
+    icon: 'shirt-outline',
+    title: 'Winter jacket',
+    message: 'I want a warm winter jacket, preferably waterproof',
+  },
+  {
+    icon: 'cafe-outline',
+    title: 'Coffee gear',
+    message: 'Find a good drip coffee maker under $80',
+  },
+  {
+    icon: 'headset-outline',
+    title: 'Headphones',
+    message: 'Wireless noise-cancelling headphones under $200',
+  },
+  {
+    icon: 'gift-outline',
+    title: 'Gifts under $50',
+    message: 'Suggest gift ideas under $50 for a birthday',
+  },
+];
+
 export default function ChatScreen() {
   const { colors, typography } = useTheme();
   const { user } = useAuth();
@@ -148,12 +187,33 @@ export default function ChatScreen() {
   /** Single in-place loading line (replaces stacking progress bubbles) */
   const [activityLine, setActivityLine] = useState<string | null>(null);
 
-  const scrollRef = useRef<ScrollView | null>(null);
+  const insets = useSafeAreaInsets();
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showToast = (message: string) => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
+    setToast(message);
+    toastTimerRef.current = setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, 2800);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    };
+  }, []);
   const idCounterRef = useRef(0);
   const lastAssistantTextRef = useRef<string>('');
   /** LLM streams JSON for ask_clarifying_q; hide it until structured clarification event arrives */
   const streamIsJsonRef = useRef(false);
   const streamingTextRef = useRef('');
+  const scrollRef = useRef<ScrollView | null>(null);
 
   const nextId = (prefix: 'sys' | 'u' | 'a') => {
     // Date.now() alone can collide when multiple events arrive in the same millisecond
@@ -172,6 +232,9 @@ export default function ChatScreen() {
   }, []);
 
   const clientRef = useRef<OrchestratorWebSocketClient | null>(null);
+  /** Multiple connect() callers (mount + quick tap on starters) must share one attempt. */
+  const connectInFlightRef = useRef<Promise<void> | null>(null);
+  const chatScreenActiveRef = useRef(true);
 
   const appendSystem = (text: string) => {
     setMessages((prev) => [...prev, { id: nextId('sys'), kind: 'text', role: 'system', text }]);
@@ -220,133 +283,170 @@ export default function ChatScreen() {
     }
   };
 
-  const connect = async () => {
-    if (isConnecting || isConnected) return;
-    setIsConnecting(true);
-    try {
-      const client = new OrchestratorWebSocketClient({ sessionId, userId });
-      clientRef.current = client;
-
-      const unsubscribe = client.onEvent((event: OrchestratorServerEvent) => {
-        if (event.type === 'connected') {
-          setIsConnected(true);
-          streamIsJsonRef.current = false;
-          streamingTextRef.current = '';
-          return;
-        }
-
-        if (event.type === 'thinking') {
-          setActivityLine(String(event.data?.message || 'Thinking…').trim());
-          return;
-        }
-
-        if (event.type === 'progress') {
-          setActivityLine(String(event.data?.message || 'Working…').trim());
-          return;
-        }
-
-        if (event.type === 'token') {
-          setActivityLine(null);
-          const token = String(event.data?.content || '');
-          if (!token) return;
-          setStreamingText((prev) => {
-            const next = prev + token;
-            if (shouldSuppressTokenStream(next, streamIsJsonRef.current)) {
-              streamIsJsonRef.current = true;
-              streamingTextRef.current = '';
-              return '';
-            }
-            streamingTextRef.current = next;
-            return next;
-          });
-          return;
-        }
-
-        if (event.type === 'clarification') {
-          streamIsJsonRef.current = false;
-          streamingTextRef.current = '';
-          setStreamingText('');
-          setActivityLine(null);
-          setNeedsClarification(true);
-          const question = String(event.data?.question || 'Can you clarify?').trim();
-          const contextRaw = event.data?.context;
-          const context =
-            contextRaw !== undefined && contextRaw !== null && String(contextRaw).trim() !== ''
-              ? String(contextRaw).trim()
-              : undefined;
-          const suggestions = normalizeSuggestionList(event.data?.suggestions);
-          setMessages((prev) => {
-            const pruned = pruneTrailingHiddenAssistant(prev);
-            return [
-              ...pruned,
-              {
-                id: nextId('a'),
-                kind: 'clarification',
-                question,
-                context,
-                suggestions,
-              },
-            ];
-          });
-          return;
-        }
-
-        if (event.type === 'results') {
-          setActivityLine(null);
-          const products = Array.isArray(event.data?.products) ? (event.data.products as OrchestratorProduct[]) : [];
-          const count = products.length;
-          const finalResponse = event.data?.final_response ? String(event.data.final_response) : undefined;
-          appendResults(products, finalResponse || `Found ${count} products`);
-          return;
-        }
-
-        if (event.type === 'error') {
-          streamIsJsonRef.current = false;
-          streamingTextRef.current = '';
-          setStreamingText('');
-          setActivityLine(null);
-          appendSystem(`Error: ${event.data?.error || 'Unknown error'}`);
-          return;
-        }
-
-        if (event.type === 'done') {
-          streamIsJsonRef.current = false;
-          setActivityLine(null);
-          let buffered = streamingTextRef.current.trim();
-          streamingTextRef.current = '';
-          setStreamingText('');
-          if (shouldHideAssistantBlob(buffered)) {
-            buffered = '';
-          }
-          const msg = event.data?.message ? String(event.data.message).trim() : '';
-
-          if (buffered) {
-            appendAssistant(buffered);
-          }
-
-          if (msg && !shouldHideAssistantBlob(msg)) {
-            if (msg !== buffered) {
-              appendAssistant(msg);
-            }
-          }
-          setNeedsClarification(false);
-          return;
-        }
-      });
-
-      await client.connect();
-
-      // Cleanup on disconnect/reconnect
-      clientRef.current = client;
-
-      // Ensure we clean subscription when client is replaced
-      (clientRef.current as any).__unsubscribe = unsubscribe;
-    } catch (e) {
-      appendSystem(`Failed to connect: ${(e as Error)?.message || String(e)}`);
-      setIsConnected(false);
-    } finally {
-      setIsConnecting(false);
+  const connect = (): Promise<void> => {
+    if (clientRef.current?.isConnected()) {
+      setIsConnected(true);
+      return Promise.resolve();
     }
+
+    if (connectInFlightRef.current) {
+      return connectInFlightRef.current;
+    }
+
+    const promise = (async () => {
+      setIsConnecting(true);
+      let client: OrchestratorWebSocketClient | null = null;
+      let unsubscribe: (() => void) | undefined;
+      try {
+        client = new OrchestratorWebSocketClient({ sessionId, userId });
+        clientRef.current = client;
+
+        unsubscribe = client.onEvent((event: OrchestratorServerEvent) => {
+          if (event.type === 'connected') {
+            setIsConnected(true);
+            streamIsJsonRef.current = false;
+            streamingTextRef.current = '';
+            return;
+          }
+
+          if (event.type === 'thinking') {
+            setActivityLine(String(event.data?.message || 'Thinking…').trim());
+            return;
+          }
+
+          if (event.type === 'progress') {
+            setActivityLine(String(event.data?.message || 'Working…').trim());
+            return;
+          }
+
+          if (event.type === 'token') {
+            setActivityLine(null);
+            const token = String(event.data?.content || '');
+            if (!token) return;
+            setStreamingText((prev) => {
+              const next = prev + token;
+              if (shouldSuppressTokenStream(next, streamIsJsonRef.current)) {
+                streamIsJsonRef.current = true;
+                streamingTextRef.current = '';
+                return '';
+              }
+              streamingTextRef.current = next;
+              return next;
+            });
+            return;
+          }
+
+          if (event.type === 'clarification') {
+            streamIsJsonRef.current = false;
+            streamingTextRef.current = '';
+            setStreamingText('');
+            setActivityLine(null);
+            setNeedsClarification(true);
+            const question = String(event.data?.question || 'Can you clarify?').trim();
+            const contextRaw = event.data?.context;
+            const context =
+              contextRaw !== undefined && contextRaw !== null && String(contextRaw).trim() !== ''
+                ? String(contextRaw).trim()
+                : undefined;
+            const suggestions = normalizeSuggestionList(event.data?.suggestions);
+            setMessages((prev) => {
+              const pruned = pruneTrailingHiddenAssistant(prev);
+              return [
+                ...pruned,
+                {
+                  id: nextId('a'),
+                  kind: 'clarification',
+                  question,
+                  context,
+                  suggestions,
+                },
+              ];
+            });
+            return;
+          }
+
+          if (event.type === 'results') {
+            setActivityLine(null);
+            const products = Array.isArray(event.data?.products) ? (event.data.products as OrchestratorProduct[]) : [];
+            const count = products.length;
+            const finalResponse = event.data?.final_response ? String(event.data.final_response) : undefined;
+            appendResults(products, finalResponse || `Found ${count} products`);
+            return;
+          }
+
+          if (event.type === 'error') {
+            streamIsJsonRef.current = false;
+            streamingTextRef.current = '';
+            setStreamingText('');
+            setActivityLine(null);
+            appendSystem(`Error: ${event.data?.error || 'Unknown error'}`);
+            return;
+          }
+
+          if (event.type === 'done') {
+            streamIsJsonRef.current = false;
+            setActivityLine(null);
+            let buffered = streamingTextRef.current.trim();
+            streamingTextRef.current = '';
+            setStreamingText('');
+            if (shouldHideAssistantBlob(buffered)) {
+              buffered = '';
+            }
+            const msg = event.data?.message ? String(event.data.message).trim() : '';
+
+            if (buffered) {
+              appendAssistant(buffered);
+            }
+
+            if (msg && !shouldHideAssistantBlob(msg)) {
+              if (msg !== buffered) {
+                appendAssistant(msg);
+              }
+            }
+            setNeedsClarification(false);
+            return;
+          }
+        });
+
+        await client.connect();
+
+        if (!chatScreenActiveRef.current) {
+          try {
+            unsubscribe?.();
+            client.disconnect();
+          } catch {
+            // ignore
+          }
+          clientRef.current = null;
+          return;
+        }
+
+        (clientRef.current as any).__unsubscribe = unsubscribe;
+      } catch (e) {
+        showToast('Something went wrong. Please try again.');
+        setIsConnected(false);
+        try {
+          unsubscribe?.();
+          client?.disconnect();
+        } catch {
+          // ignore
+        }
+        if (clientRef.current === client) {
+          clientRef.current = null;
+        }
+        throw e;
+      } finally {
+        setIsConnecting(false);
+      }
+    })();
+
+    connectInFlightRef.current = promise;
+    promise.finally(() => {
+      if (connectInFlightRef.current === promise) {
+        connectInFlightRef.current = null;
+      }
+    });
+    return promise;
   };
 
   const disconnect = () => {
@@ -364,15 +464,21 @@ export default function ChatScreen() {
     setIsConnected(false);
     setIsConnecting(false);
     setActivityLine(null);
-    appendSystem('Disconnected');
   };
 
-  const sendWithText = (textRaw: string) => {
+  const sendWithText = async (textRaw: string) => {
     const text = textRaw.trim();
     if (!text) return;
+
+    try {
+      await connect();
+    } catch {
+      return;
+    }
+
     const client = clientRef.current;
-    if (!client || !client.isConnected()) {
-      appendSystem('Not connected. Tap Connect first.');
+    if (!client?.isConnected()) {
+      showToast('Something went wrong. Please try again.');
       return;
     }
 
@@ -398,16 +504,22 @@ export default function ChatScreen() {
       }
     } catch (e) {
       setActivityLine(null);
-      appendSystem(`Send failed: ${(e as Error)?.message || String(e)}`);
+      showToast('Something went wrong. Please try again.');
     }
   };
 
-  const send = () => sendWithText(input);
+  const send = () => {
+    void sendWithText(input);
+  };
 
   // Auto-connect when user lands on Chat tab (good for demos).
   useEffect(() => {
-    connect();
-    return () => disconnect();
+    chatScreenActiveRef.current = true;
+    void connect().catch(() => {});
+    return () => {
+      chatScreenActiveRef.current = false;
+      disconnect();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -424,35 +536,17 @@ export default function ChatScreen() {
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 50);
   }, [messages, streamingText, activityLine]);
 
+  const showEmptyState =
+    messages.length === 0 && streamingText.length === 0 && activityLine == null;
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
       <KeyboardAvoidingView
         style={styles.container}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 80 : 0}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
       >
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
-            <Text style={[styles.status, { color: isConnected ? colors.success : colors.textSecondary }]}>
-              {isConnected ? 'Connected' : isConnecting ? 'Connecting…' : 'Disconnected'}
-            </Text>
-          </View>
-          <TouchableOpacity
-            style={[
-              styles.connectButton,
-              { backgroundColor: isConnected ? colors.surface : colors.primary, borderColor: colors.border },
-            ]}
-            onPress={isConnected ? disconnect : connect}
-            disabled={isConnecting}
-          >
-            <Ionicons name={isConnected ? 'close' : 'link'} size={16} color={isConnected ? colors.text : '#fff'} />
-            <Text style={[styles.connectButtonText, { color: isConnected ? colors.text : '#fff' }]}>
-              {isConnected ? 'Disconnect' : 'Connect'}
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.hero}>
+        <View style={[styles.hero, showEmptyState && styles.heroCompact]}>
           <Text style={[styles.heroTitle, { color: colors.text, ...typography.h1 }]}>Chat with us</Text>
           <Text style={[styles.heroSubtitle, { color: colors.textSecondary, ...typography.body }]}>
             Ask what you need—we’ll help you find products.
@@ -464,8 +558,47 @@ export default function ChatScreen() {
             scrollRef.current = r;
           }}
           style={styles.messages}
-          contentContainerStyle={styles.messagesContent}
+          contentContainerStyle={[styles.messagesContent, showEmptyState && styles.messagesContentGrow]}
+          keyboardShouldPersistTaps="handled"
         >
+          {showEmptyState ? (
+            <View style={styles.emptyState}>
+              <View style={[styles.emptyIconRing, { borderColor: colors.primary + '44' }]}>
+                <View style={[styles.emptyIconInner, { backgroundColor: colors.primary + '16' }]}>
+                  <Ionicons name="sparkles-outline" size={26} color={colors.primary} />
+                </View>
+              </View>
+              <Text style={[styles.emptyHeading, { color: colors.text }]}>What are you shopping for?</Text>
+              <Text style={[styles.emptyCaption, { color: colors.textSecondary }]}>
+                Tap a starter to send it, or type your own question below.
+              </Text>
+              <View style={styles.starterGrid}>
+                {STARTER_IDEAS.map((idea) => (
+                  <TouchableOpacity
+                    key={idea.title}
+                    style={[styles.starterTile, { backgroundColor: colors.surface, borderColor: colors.border }]}
+                    onPress={() => {
+                      void sendWithText(idea.message);
+                    }}
+                    activeOpacity={0.88}
+                  >
+                    <View style={[styles.starterIconBadge, { backgroundColor: colors.primary + '18' }]}>
+                      <Ionicons name={idea.icon} size={20} color={colors.primary} />
+                    </View>
+                    <View style={styles.starterTileText}>
+                      <Text style={[styles.starterTileTitle, { color: colors.text }]} numberOfLines={2}>
+                        {idea.title}
+                      </Text>
+                      <Text style={[styles.starterTileHint, { color: colors.textSecondary }]} numberOfLines={2}>
+                        {idea.message}
+                      </Text>
+                    </View>
+                    <Ionicons name="arrow-forward" size={16} color={colors.textSecondary} style={styles.starterChevron} />
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          ) : null}
           {messages.map((m) => {
             if (m.kind === 'clarification') {
               return (
@@ -499,7 +632,9 @@ export default function ChatScreen() {
                               backgroundColor: colors.primary + '14',
                             },
                           ]}
-                          onPress={() => sendWithText(s)}
+                          onPress={() => {
+                            void sendWithText(s);
+                          }}
                           activeOpacity={0.85}
                         >
                           <Text style={[styles.suggestionChipText, { color: colors.primary }]} numberOfLines={2}>
@@ -673,6 +808,22 @@ export default function ChatScreen() {
             <Ionicons name="send" size={16} color="#fff" />
           </TouchableOpacity>
         </View>
+
+        {toast ? (
+          <View
+            pointerEvents="none"
+            style={[
+              styles.toast,
+              {
+                backgroundColor: colors.surface,
+                borderColor: colors.border,
+                bottom: Math.max(insets.bottom, 8) + 78,
+              },
+            ]}
+          >
+            <Text style={[styles.toastText, { color: colors.text }]}>{toast}</Text>
+          </View>
+        ) : null}
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -682,17 +833,25 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
-  header: {
+  toast: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    paddingVertical: 12,
     paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    zIndex: 50,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+    elevation: 4,
   },
-  headerLeft: {
-    flex: 1,
+  toastText: {
+    fontSize: 14,
+    fontWeight: '600',
+    textAlign: 'center',
   },
   hero: {
     paddingVertical: 20,
@@ -709,21 +868,81 @@ const styles = StyleSheet.create({
     opacity: 0.85,
     paddingHorizontal: 12,
   },
-  status: {
-    fontSize: 12,
+  heroCompact: {
+    paddingVertical: 14,
+    marginBottom: 0,
   },
-  connectButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 10,
+  messagesContentGrow: {
+    flexGrow: 1,
+  },
+  emptyState: {
+    paddingBottom: 24,
+    gap: 8,
+    alignItems: 'center',
+  },
+  emptyIconRing: {
+    padding: 3,
+    borderRadius: 999,
     borderWidth: 1,
+    marginBottom: 4,
+  },
+  emptyIconInner: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyHeading: {
+    fontSize: 18,
+    fontWeight: '700',
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  emptyCaption: {
+    fontSize: 14,
+    lineHeight: 20,
+    textAlign: 'center',
+    paddingHorizontal: 8,
+    marginBottom: 8,
+    opacity: 0.92,
+  },
+  starterGrid: {
+    alignSelf: 'stretch',
+    gap: 10,
+    marginTop: 4,
+  },
+  starterTile: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    gap: 12,
   },
-  connectButtonText: {
-    fontSize: 13,
-    fontWeight: '600',
+  starterIconBadge: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  starterTileText: {
+    flex: 1,
+    gap: 2,
+    minWidth: 0,
+  },
+  starterTileTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  starterTileHint: {
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  starterChevron: {
+    opacity: 0.65,
   },
   activityInline: {
     alignSelf: 'flex-start',
