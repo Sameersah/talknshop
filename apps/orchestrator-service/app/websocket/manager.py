@@ -9,6 +9,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Set
 from fastapi import WebSocket
+from starlette.websockets import WebSocketDisconnect
 import json
 
 from app.core.config import settings
@@ -134,13 +135,19 @@ class ConnectionManager:
                 }
             )
             
-            # Send connection confirmation
-            await self.send_event(session_id, EventType.CONNECTED, {
+            # Send connection confirmation (if this fails, send_event disconnects — do not run handler)
+            ok = await self.send_event(session_id, EventType.CONNECTED, {
                 "session_id": session_id,
                 "message": "Connected to TalknShop orchestrator",
                 "server_time": datetime.utcnow().isoformat()
             })
-            
+            if not ok:
+                raise WebSocketError(
+                    "Client disconnected before connection handshake completed"
+                )
+
+        except WebSocketError:
+            raise
         except Exception as e:
             logger.error(
                 f"Failed to establish WebSocket connection: {str(e)}",
@@ -241,17 +248,28 @@ class ConnectionManager:
                 )
             
             return True
-            
+
+        except WebSocketDisconnect:
+            logger.info(
+                "Client disconnected before event was sent (%s)",
+                event_type,
+                extra={"session_id": session_id, "event_type": event_type},
+            )
+            if metadata:
+                metadata.increment_error_count()
+            await self.disconnect(session_id, "Client disconnected")
+            return False
+
         except Exception as e:
             logger.error(
                 f"Failed to send WebSocket event: {str(e)}",
                 extra={"session_id": session_id, "event_type": event_type},
                 exc_info=True
             )
-            
+
             if metadata:
                 metadata.increment_error_count()
-            
+
             # Close connection on send error
             await self.disconnect(session_id, f"Send error: {str(e)}")
             return False

@@ -84,6 +84,21 @@ const RECORDING_FILENAME = 'recording.webm';
 const VIDEO_MIME = 'video/webm';
 const VIDEO_FILENAME = 'asl-video.webm';
 
+/** Only treat as failure when there is literally no payload (server will validate WebM). */
+async function waitForRecorderChunks(
+  getChunks: () => Blob[],
+  getType: () => string,
+  opts: { maxWaitMs: number; intervalMs: number },
+): Promise<Blob> {
+  const deadline = Date.now() + opts.maxWaitMs;
+  let blob = new Blob(getChunks(), { type: getType() });
+  while (blob.size === 0 && Date.now() < deadline) {
+    await new Promise<void>((r) => setTimeout(r, opts.intervalMs));
+    blob = new Blob(getChunks(), { type: getType() });
+  }
+  return blob;
+}
+
 function mediaTypeFromFile(file: File): 'image' | 'audio' | 'video' {
   if (file.type.startsWith('audio/')) return 'audio';
   if (file.type.startsWith('video/')) return 'video';
@@ -168,6 +183,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({ onSend, disabled, cl
   /** If model returns several guesses or wasn't sure, let user pick (or type "shoes"). */
   const applyAslOutcome = useCallback(
     (outcome: AslRecognitionOutcome) => {
+      setUploadError(null);
       const alts = outcome.alternatives ?? [];
       const uncertain = outcome.decision !== 'accepted';
       if (alts.length >= 2 || uncertain) {
@@ -194,6 +210,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({ onSend, disabled, cl
     (text: string) => {
       const t = text.trim();
       if (!t) return;
+      setUploadError(null);
       onSend(t);
       clearAslDisambiguation();
       setAslStatus(`Sent: ${t}`);
@@ -216,8 +233,8 @@ export const MessageInput: React.FC<MessageInputProps> = ({ onSend, disabled, cl
         if (e.data.size > 0) chunksRef.current.push(e.data);
       };
       recorder.onstop = async () => {
-        stopStream();
         const blob = new Blob(chunksRef.current, { type: recorder.mimeType || 'audio/webm' });
+        stopStream();
         const file = new File([blob], RECORDING_FILENAME, { type: blob.type });
         setUploading(true);
         try {
@@ -242,7 +259,15 @@ export const MessageInput: React.FC<MessageInputProps> = ({ onSend, disabled, cl
 
   const stopAudioRecording = useCallback(() => {
     if (!isRecordingAudio || !mediaRecorderRef.current) return;
-    mediaRecorderRef.current.stop();
+    const rec = mediaRecorderRef.current;
+    try {
+      if (rec.state === 'recording') {
+        rec.requestData();
+      }
+    } catch {
+      // ignore
+    }
+    rec.stop();
     mediaRecorderRef.current = null;
     setIsRecordingAudio(false);
   }, [isRecordingAudio]);
@@ -250,6 +275,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({ onSend, disabled, cl
   const startVideoRecording = useCallback(async () => {
     if (disabled || uploading || isRecordingAudio || isRecordingVideo) return;
     setRecordError(null);
+    setUploadError(null);
     setAslStatus('Recording ASL video…');
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
@@ -262,8 +288,22 @@ export const MessageInput: React.FC<MessageInputProps> = ({ onSend, disabled, cl
         if (e.data.size > 0) chunksRef.current.push(e.data);
       };
       recorder.onstop = async () => {
+        // Build the blob before stopStream(): stopping tracks first can abort muxer finalization
+        // and yield incomplete WebM (invalid EBML) in some browsers.
+        const blob = await waitForRecorderChunks(
+          () => chunksRef.current,
+          () => recorder.mimeType || 'video/webm',
+          { maxWaitMs: 600, intervalMs: 30 },
+        );
         stopStream();
-        const blob = new Blob(chunksRef.current, { type: recorder.mimeType || 'video/webm' });
+        if (blob.size === 0) {
+          setUploadError(
+            'No video data was captured. Allow camera access, record for at least one second, then stop.',
+          );
+          setAslStatus(null);
+          return;
+        }
+        setUploadError(null);
         const file = new File([blob], VIDEO_FILENAME, { type: blob.type });
         // Phase 1 ASL flow: send video to ASL service to get transcript,
         // then send transcript as a normal text message (no video attachment).
@@ -306,7 +346,15 @@ export const MessageInput: React.FC<MessageInputProps> = ({ onSend, disabled, cl
 
   const stopVideoRecording = useCallback(() => {
     if (!isRecordingVideo || !mediaRecorderRef.current) return;
-    mediaRecorderRef.current.stop();
+    const rec = mediaRecorderRef.current;
+    // Do not call requestData() here: with some codecs it races onstop and yields an empty blob.
+    try {
+      if (rec.state === 'recording') {
+        rec.stop();
+      }
+    } catch {
+      // ignore
+    }
     mediaRecorderRef.current = null;
     setIsRecordingVideo(false);
     // Keep current aslStatus (it will move to "Uploading and recognizing…" in onstop).
@@ -413,7 +461,13 @@ export const MessageInput: React.FC<MessageInputProps> = ({ onSend, disabled, cl
     setNoteBoxOpen((o) => !o);
   };
   const toggleAslPanel = () => {
-    setAslPanelOpen((o) => !o);
+    setAslPanelOpen((o) => {
+      if (!o) {
+        setUploadError(null);
+        setRecordError(null);
+      }
+      return !o;
+    });
   };
 
   return (

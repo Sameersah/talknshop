@@ -58,6 +58,8 @@ services:
       - ../WLASL/code/I3D/archived/asl2000/FINAL_nslt_2000_iters=5104_top1=32.48_top5=57.31_top10=66.31.pt:/app/models/wlasl_nslt_2000.pt:ro
       # Optional local ASL model assets (class lists, extra checkpoints)
       - ./assets/asl-models:/assets/asl-models:ro
+      # Persist MediaPipe enrollment templates across rebuilds (maps to ASL_MEDIAPIPE_TEMPLATES_DIR)
+      - ./apps/asl-service/mediapipe_templates:/app/mediapipe_templates
     networks:
       - talknshop-network
 

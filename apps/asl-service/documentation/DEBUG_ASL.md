@@ -1,10 +1,43 @@
 # Debugging ASL recognition (WLASL I3D)
 
+## WebM recordings failing with “Failed to open video file”
+
+Browsers often upload **`video/webm`**. OpenCV in slim Docker images may not decode VP8/VP9. The service now **transcodes with ffmpeg** to H.264 MP4 when OpenCV fails. Rebuild the ASL image after pulling updates so **ffmpeg** is installed (`docker compose build --no-cache asl-service`).
+
 ## Quick checks
 
 1. **Health** — `GET /health` → `model_loaded: true` (not stub).
 2. **One clip** — `curl -F "video=@clip.webm" http://localhost:8004/predict | jq`
 3. Read **`decision`** and **`alternatives`** in the JSON (not only `transcript`).
+4. **MediaPipe enrollments** — `GET http://localhost:8004/mediapipe/status` → check `templates_dir`, `labels`, and `samples_per_label`. If `labels` is empty after you enrolled, templates are not on disk where you think (wrong process or volume).
+
+## MediaPipe templates disappear after rebuild
+
+Enrollments are JSON files under `ASL_MEDIAPIPE_TEMPLATES_DIR` (default `/app/mediapipe_templates` in Docker). Without a **host volume**, a new container has an empty folder, so `/predict` falls back to WLASL.
+
+**Fix:** run Compose from the **talknshop repo root** so `docker-compose.yml` mounts `./apps/asl-service/mediapipe_templates:/app/mediapipe_templates`. After each enroll, confirm files on your Mac:
+
+```bash
+ls apps/asl-service/mediapipe_templates
+```
+
+**Do not** run a second ASL process on port 8004 (e.g. local `uvicorn` and Docker at once). Enroll to one, predict to the other, and templates will not match.
+
+**If you run ASL with `uvicorn` on the host** (not Docker), set in `.env`:
+
+`ASL_MEDIAPIPE_TEMPLATES_DIR=/absolute/path/to/talknshop/apps/asl-service/mediapipe_templates`
+(`/app/...` does not exist on macOS.)
+
+## Batch rename clips for enrollment
+
+From repo root, copy all `.mov`/`.mp4`/`.webm` in a folder into numbered names:
+
+```bash
+chmod +x scripts/number_asl_clips.sh
+./scripts/number_asl_clips.sh book ~/Downloads/book_raw_clips
+```
+
+Output defaults to `videos/enrollment/book/` (under `.gitignore`). Pass a third path to choose another output directory.
 
 ## Response fields
 

@@ -14,7 +14,7 @@ import uvicorn
 from app.core.config import settings
 from app.core.logging_config import setup_logging
 from app.core.aws_clients import verify_aws_connectivity
-from app.core.errors import map_error_to_http
+from app.core.errors import WebSocketError, map_error_to_http
 from app.models.schemas import HealthResponse
 from app.websocket.manager import manager
 from app.services.media_client import media_client
@@ -239,7 +239,16 @@ async def websocket_chat_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected normally: {session_id}")
         await manager.disconnect(session_id, "Client disconnected")
-    
+
+    except WebSocketError as e:
+        # Client closed during accept/handshake (navigation, duplicate socket, HMR) — expected sometimes
+        logger.info(
+            "WebSocket setup aborted: %s",
+            e.message,
+            extra={"session_id": session_id},
+        )
+        await manager.disconnect(session_id, e.message)
+
     except Exception as e:
         logger.error(
             f"WebSocket error: {str(e)}",
