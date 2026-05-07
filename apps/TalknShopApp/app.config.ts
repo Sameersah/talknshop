@@ -3,28 +3,34 @@ import * as dotenv from 'dotenv';
 import * as path from 'path';
 import * as fs from 'fs';
 
-// Load .env file from project root
-// Try multiple possible paths since __dirname might not work in all contexts
-const possiblePaths = [
-  path.resolve(process.cwd(), '.env'), // From project root
-  path.resolve(__dirname || process.cwd(), '../../.env'), // Relative to app.config.ts
-  path.resolve(process.cwd(), '../../.env'), // Fallback
-];
+// __dirname = apps/TalknShopApp (where this file lives). Load env in merge order:
+// 1) monorepo root .env  2) apps/TalknShopApp/.env  3) process.cwd()/.env (later overrides earlier)
+const appDir = typeof __dirname !== 'undefined' ? __dirname : process.cwd();
+const monorepoRootEnv = path.resolve(appDir, '../../.env');
+const appEnv = path.resolve(appDir, '.env');
+const cwdEnv = path.resolve(process.cwd(), '.env');
 
-let envPath: string | null = null;
-for (const possiblePath of possiblePaths) {
-  if (fs.existsSync(possiblePath)) {
-    envPath = possiblePath;
-    break;
-  }
+const loadedEnvFiles: string[] = [];
+if (fs.existsSync(monorepoRootEnv)) {
+  dotenv.config({ path: monorepoRootEnv });
+  loadedEnvFiles.push(monorepoRootEnv);
+}
+if (fs.existsSync(appEnv)) {
+  dotenv.config({ path: appEnv, override: true });
+  loadedEnvFiles.push(`${appEnv} (overrides)`);
+}
+if (fs.existsSync(cwdEnv) && cwdEnv !== appEnv) {
+  dotenv.config({ path: cwdEnv, override: true });
+  loadedEnvFiles.push(`${cwdEnv} (overrides)`);
 }
 
-if (envPath) {
-  dotenv.config({ path: envPath });
-  console.log(`✅ Loaded .env from ${envPath}`);
+if (loadedEnvFiles.length > 0) {
+  console.log(`✅ Loaded env: ${loadedEnvFiles.join(' → ')}`);
 } else {
-  console.warn(`⚠️  .env file not found. Tried: ${possiblePaths.join(', ')}`);
-  console.warn(`⚠️  Please create .env file at project root from .env.example`);
+  console.warn(
+    `⚠️  No .env found. Create one: cp apps/TalknShopApp/env.example apps/TalknShopApp/.env ` +
+      `(and set EXPO_PUBLIC_COGNITO_DOMAIN, etc.), or add talknshop/.env at monorepo root.`
+  );
 }
 
 export default ({ config }: ConfigContext): ExpoConfig => ({

@@ -4,4 +4,3 @@ import { SellerScreen } from '@/screens/SellerScreen';
 export default function SellScreen() {
   return <SellerScreen />;
 }
-

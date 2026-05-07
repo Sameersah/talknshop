@@ -1,29 +1,45 @@
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '@/hooks/useTheme';
-import { Platform } from 'react-native';
+import { Platform, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function TabLayout() {
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
   const insets = useSafeAreaInsets();
+  const bottomPad = Math.max(insets.bottom, Platform.OS === 'android' ? 8 : 0);
 
   return (
     <Tabs
       screenOptions={{
         tabBarActiveTintColor: colors.primary,
-        tabBarInactiveTintColor: colors.textSecondary,
+        // Slightly brighter than textSecondary so labels stay readable on black tab bar
+        tabBarInactiveTintColor: isDark ? '#AEAEB2' : colors.textSecondary,
+        // Many tabs: horizontal scroll avoids cramped labels on narrow phones
+        tabBarScrollEnabled: true,
+        tabBarShowLabel: true,
+        tabBarLabelStyle: {
+          fontSize: 11,
+          fontWeight: '600',
+          marginTop: 2,
+          marginBottom: 0,
+        },
+        tabBarIconStyle: { marginTop: 0 },
+        tabBarItemStyle: {
+          minWidth: 56,
+          paddingHorizontal: 6,
+          paddingVertical: 2,
+        },
         tabBarStyle: {
           backgroundColor: colors.background,
           borderTopColor: colors.border,
-          borderTopWidth: 1,
-          height: Platform.OS === 'ios' ? (insets.bottom + 60) : 60,
-          paddingBottom: Platform.OS === 'ios' ? insets.bottom : 8,
-          paddingTop: 8,
+          borderTopWidth: StyleSheet.hairlineWidth,
+          // Let the bar size to content; fixed height + safe area was clipping labels
+          paddingBottom: bottomPad,
+          paddingTop: 6,
+          minHeight: 64 + bottomPad,
           elevation: 0,
           shadowOpacity: 0,
-          borderTopLeftRadius: 0,
-          borderTopRightRadius: 0,
         },
         headerShown: false,
         contentStyle: { backgroundColor: colors.background }, // Ensure black background for all tab screens
@@ -53,6 +69,15 @@ export default function TabLayout() {
           title: 'Chat',
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="chatbubbles" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="asl"
+        options={{
+          title: 'ASL',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="hand-left" size={size} color={color} />
           ),
         }}
       />

@@ -10,6 +10,7 @@ import { Audio } from 'expo-av';
 import { OrchestratorWebSocketClient, type MediaItemForSend } from '@/services/orchestratorWebSocket';
 import { uploadMediaFile } from '@/services/mediaUploadService';
 import { getFeaturedProducts, searchProducts, Product } from '@/data/products';
+import { searchCatalog } from '@/services/catalogService';
 
 const CONVERSATION_STARTERS = [
   "What's the best iPhone case?",
@@ -63,11 +64,12 @@ export const SearchScreen: React.FC = () => {
     Alert.alert('Sent', 'Your audio/video/image was sent to the assistant.');
   };
 
-  const handleSearch = () => {
+  const handleSearch = async () => {
     const query = searchQuery.trim();
     if (query) {
       setIsSearching(true);
-      const results = searchProducts(query);
+      const remote = await searchCatalog(query);
+      const results = remote != null && remote.length > 0 ? remote : searchProducts(query);
       setSearchResults(results);
       if (results.length === 0) {
         Alert.alert('No Results', `No products found for "${query}"`);
@@ -78,17 +80,28 @@ export const SearchScreen: React.FC = () => {
     }
   };
 
-  // Auto-search as user types
+  // Auto-search as user types — catalog-service when available, else local demo data
   useEffect(() => {
     const query = searchQuery.trim();
-    if (query) {
-      setIsSearching(true);
-      const results = searchProducts(query);
-      setSearchResults(results);
-    } else {
+    if (!query) {
       setIsSearching(false);
       setSearchResults([]);
+      return;
     }
+    setIsSearching(true);
+    let cancelled = false;
+    (async () => {
+      const remote = await searchCatalog(query);
+      if (cancelled) return;
+      if (remote != null && remote.length > 0) {
+        setSearchResults(remote);
+      } else {
+        setSearchResults(searchProducts(query));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [searchQuery]);
 
   const displayedProducts = useMemo(() => {

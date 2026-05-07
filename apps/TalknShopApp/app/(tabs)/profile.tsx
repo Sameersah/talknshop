@@ -43,10 +43,8 @@ export default function ProfileScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
       <ScrollView style={styles.scrollView} contentContainerStyle={styles.content}>
-        <Text style={[styles.title, { color: colors.text, ...typography.h1 }]}>
-          Profile
-        </Text>
-        
+        <Text style={[styles.title, { color: colors.text, ...typography.h1 }]}>Profile</Text>
+
         <View style={[styles.userInfo, { backgroundColor: colors.surface }]}>
           <Text style={[styles.userName, { color: colors.text, ...typography.h3 }]}>
             {user?.name || 'Guest User'}

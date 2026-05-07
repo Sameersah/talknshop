@@ -21,7 +21,9 @@ const getEnvVar = (key: string, required: boolean = true): string => {
     const availableKeys = Object.keys(Constants.expoConfig?.extra || {}).join(', ');
     throw new Error(
       `Missing required environment variable: ${key}. ` +
-      `Please set EXPO_PUBLIC_${key} in your .env file at project root. ` +
+      `Set EXPO_PUBLIC_${key} (recommended) or ${key} in apps/TalknShopApp/.env ` +
+      `(copy from apps/TalknShopApp/env.example), or in talknshop/.env at monorepo root. ` +
+      `Restart Expo after editing .env (stop and run npx expo start again). ` +
       `Available extra keys: ${availableKeys || 'none'}`
     );
   }
@@ -84,11 +86,16 @@ export const config = ENV[getEnvironment()];
 export const LOCAL_IP = '192.168.1.70'; // Your Mac's IP - update if it changes
 
 // Service-specific URLs (for direct service calls, bypassing orchestrator)
-// Note: Services will detect iOS platform and use LOCAL_IP automatically
+// Docker Compose: orchestrator 8000, media 8001, catalog 8002, seller-crosspost 8003, asl 8004
+// Replace localhost with LOCAL_IP on a physical iPhone via each service helper.
 export const SERVICE_URLS = {
   MEDIA: __DEV__ ? 'http://localhost:8001' : config.API_BASE_URL,
+  /** Dev default; seller-crosspost in compose is :8003 — align routes before pointing here. */
   SELLER: __DEV__ ? 'http://localhost:8005' : config.API_BASE_URL,
-  MARKETPLACE: __DEV__ ? 'http://localhost:8004' : config.API_BASE_URL,
+  /** seller-crosspost-service (marketplace posting / jobs). */
+  MARKETPLACE: __DEV__ ? 'http://localhost:8003' : config.API_BASE_URL,
+  CATALOG: __DEV__ ? 'http://localhost:8002' : config.API_BASE_URL,
+  ASL: __DEV__ ? 'http://localhost:8004' : config.API_BASE_URL,
   ORCHESTRATOR: config.API_BASE_URL, // Port 8000
 };
 

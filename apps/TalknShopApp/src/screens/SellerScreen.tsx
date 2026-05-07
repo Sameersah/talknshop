@@ -307,15 +307,13 @@ export const SellerScreen: React.FC = () => {
       style={[styles.container, { backgroundColor: colors.background }]}
       contentContainerStyle={[
         styles.contentContainer,
-        { paddingTop: insets.top + 32, paddingBottom: insets.bottom + 40 }
+        { paddingTop: insets.top + 32, paddingBottom: insets.bottom + 40 },
       ]}
       showsVerticalScrollIndicator={false}
     >
       <View style={styles.header}>
-        <Text style={[styles.title, { color: colors.text, ...typography.h1 }]}>
-          Sell Your Product
-        </Text>
-        <Text style={[styles.subtitle, { color: colors.textSecondary, ...typography.body }]}>
+        <Text style={[styles.sellerTitle, { color: colors.text, ...typography.h1 }]}>Sell Your Product</Text>
+        <Text style={[styles.sellerSubtitle, { color: colors.textSecondary, ...typography.body }]}>
           Just select category & add photo. That's it! 🚀
         </Text>
       </View>
@@ -748,11 +746,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 8,
   },
-  title: {
+  sellerTitle: {
     textAlign: 'center',
     marginBottom: 8,
   },
-  subtitle: {
+  sellerSubtitle: {
     textAlign: 'center',
     opacity: 0.8,
     paddingHorizontal: 20,

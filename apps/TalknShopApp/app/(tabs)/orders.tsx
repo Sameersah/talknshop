@@ -9,9 +9,7 @@ export default function OrdersScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={styles.content}>
-        <Text style={[styles.title, { color: colors.text, ...typography.h1 }]}>
-          My Orders
-        </Text>
+        <Text style={[styles.title, { color: colors.text, ...typography.h1 }]}>My Orders</Text>
         <Text style={[styles.subtitle, { color: colors.textSecondary, ...typography.body }]}>
           Track your purchases
         </Text>

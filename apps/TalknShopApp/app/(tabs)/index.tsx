@@ -6,7 +6,7 @@ import { useTheme } from '@/hooks/useTheme';
 
 export default function HomeScreen() {
   const { colors } = useTheme();
-  
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
       <SearchScreen />
