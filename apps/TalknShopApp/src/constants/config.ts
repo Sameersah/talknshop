@@ -81,9 +81,14 @@ const getEnvironment = (): keyof typeof ENV => {
 // Export configuration
 export const config = ENV[getEnvironment()];
 
-// Get local IP for iOS device access (use your Mac's IP when testing on iPhone)
-// Update this to your Mac's IP address: ifconfig | grep "inet " | grep -v 127.0.0.1
-export const LOCAL_IP = '192.168.1.70'; // Your Mac's IP - update if it changes
+// Get local IP for iOS device access (use your Mac's IP when testing on iPhone).
+// Reads EXPO_PUBLIC_LOCAL_IP from .env first (preferred — survives IP changes),
+// then falls back to a hardcoded value. Update apps/TalknShopApp/.env when your
+// Mac's Wi-Fi IP changes — run `ifconfig | grep "inet " | grep -v 127.0.0.1`.
+export const LOCAL_IP =
+  (typeof process !== 'undefined' && process.env.EXPO_PUBLIC_LOCAL_IP) ||
+  Constants.expoConfig?.extra?.LOCAL_IP ||
+  '10.0.0.43';
 
 // Service-specific URLs (for direct service calls, bypassing orchestrator)
 // Docker Compose: orchestrator 8000, media 8001, catalog 8002, seller-crosspost 8003, asl 8004

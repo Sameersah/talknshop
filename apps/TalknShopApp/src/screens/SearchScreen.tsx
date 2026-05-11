@@ -1,22 +1,52 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, TextInput, Alert, FlatList, ActivityIndicator } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TextInput,
+  Alert,
+  ActivityIndicator,
+  Platform,
+} from 'react-native';
 import { useTheme } from '@/hooks/useTheme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { ProductCard } from '@/components/ProductCard';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import { Audio } from 'expo-av';
+import { router } from 'expo-router';
 import { OrchestratorWebSocketClient, type MediaItemForSend } from '@/services/orchestratorWebSocket';
 import { uploadMediaFile } from '@/services/mediaUploadService';
 import { getFeaturedProducts, searchProducts, Product } from '@/data/products';
 import { searchCatalog } from '@/services/catalogService';
+import {
+  AuroraOrb,
+  Chip,
+  IconBadge,
+  PressableScale,
+  ProductTile,
+  SectionHeader,
+  WhisperBackground,
+} from '@/components/ui';
 
-const CONVERSATION_STARTERS = [
-  "What's the best iPhone case?",
-  'Show me running shoes',
-  'I need a coffee maker',
-  'Find me a good laptop bag',
+const TRENDING_SEARCHES = [
+  'Running shoes under $100',
+  'Wireless headphones',
+  'Coffee maker',
+  'Lightweight laptop',
+  'Winter jacket',
+];
+
+const QUICK_MODES: Array<{
+  key: 'voice' | 'photo' | 'video' | 'sign';
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  label: string;
+}> = [
+  { key: 'voice', icon: 'mic-outline', label: 'Voice' },
+  { key: 'photo', icon: 'camera-outline', label: 'Photo' },
+  { key: 'video', icon: 'videocam-outline', label: 'Video' },
+  { key: 'sign', icon: 'hand-left-outline', label: 'Sign' },
 ];
 
 const getFileSize = async (uri: string): Promise<number> => {
@@ -54,33 +84,7 @@ export const SearchScreen: React.FC = () => {
     };
   }, []);
 
-  const sendMediaToOrchestrator = async (mediaItems: MediaItemForSend[]) => {
-    const client = wsClientRef.current;
-    if (!client?.isConnected()) {
-      Alert.alert('Not Connected', 'Connecting to assistant… Try again in a moment.');
-      return;
-    }
-    client.sendUserMessage('', mediaItems);
-    Alert.alert('Sent', 'Your audio/video/image was sent to the assistant.');
-  };
-
-  const handleSearch = async () => {
-    const query = searchQuery.trim();
-    if (query) {
-      setIsSearching(true);
-      const remote = await searchCatalog(query);
-      const results = remote != null && remote.length > 0 ? remote : searchProducts(query);
-      setSearchResults(results);
-      if (results.length === 0) {
-        Alert.alert('No Results', `No products found for "${query}"`);
-      }
-    } else {
-      setIsSearching(false);
-      setSearchResults([]);
-    }
-  };
-
-  // Auto-search as user types — catalog-service when available, else local demo data
+  // Auto-search as user types
   useEffect(() => {
     const query = searchQuery.trim();
     if (!query) {
@@ -111,93 +115,33 @@ export const SearchScreen: React.FC = () => {
     return getFeaturedProducts();
   }, [isSearching, searchQuery, searchResults]);
 
+  const sendMediaToOrchestrator = async (mediaItems: MediaItemForSend[]) => {
+    const client = wsClientRef.current;
+    if (!client?.isConnected()) {
+      Alert.alert('Not Connected', 'Connecting to assistant… Try again in a moment.');
+      return;
+    }
+    client.sendUserMessage('', mediaItems);
+    // Forward the user to the Talk tab so they see the response live
+    router.push('/(tabs)/chat');
+  };
+
   const handleProductPress = (product: Product) => {
     Alert.alert(
       product.name,
       `${product.description}\n\nPrice: $${product.price.toFixed(2)}\nRating: ${product.rating}/5 (${product.reviewCount} reviews)`,
       [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'View Details', onPress: () => console.log('View product:', product.id) },
-      ]
+        { text: 'Close', style: 'cancel' },
+        { text: 'Ask AI about this', onPress: () => router.push({ pathname: '/(tabs)/chat', params: { prefill: `Tell me more about ${product.name}` } }) },
+      ],
     );
   };
 
-
-  const handleImageSearch = async () => {
-    try {
-      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission Required', 'Please grant camera roll permissions to search with images.');
-        return;
-      }
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
-        aspect: [4, 3],
-        quality: 0.8,
-      });
-      if (result.canceled || !result.assets[0]) return;
-      const asset = result.assets[0];
-      const uri = asset.uri;
-      const fileName = uri.split('/').pop() ?? `image_${Date.now()}.jpg`;
-      const contentType = 'image/jpeg';
-      const fileSize = asset.fileSize ?? (await getFileSize(uri));
-      setMediaUploading(true);
-      try {
-        const { s3_key } = await uploadMediaFile(uri, fileName, contentType, fileSize, 'image');
-        await sendMediaToOrchestrator([
-          { media_type: 'image', s3_key, content_type: contentType, size_bytes: fileSize },
-        ]);
-      } catch (e) {
-        Alert.alert('Upload Failed', e instanceof Error ? e.message : 'Could not upload image');
-      } finally {
-        setMediaUploading(false);
-      }
-    } catch (error) {
-      console.error('Image picker error:', error);
-      Alert.alert('Error', 'Failed to pick image');
-    }
-  };
-
-  const handleVideoSearch = async () => {
-    try {
-      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission Required', 'Please grant camera roll permissions for video.');
-        return;
-      }
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Videos,
-        allowsEditing: false,
-      });
-      if (result.canceled || !result.assets[0]) return;
-      const asset = result.assets[0];
-      const uri = asset.uri;
-      const fileName = uri.split('/').pop() ?? `video_${Date.now()}.mp4`;
-      const contentType = 'video/mp4';
-      const fileSize = asset.fileSize ?? (await getFileSize(uri));
-      setMediaUploading(true);
-      try {
-        const { s3_key } = await uploadMediaFile(uri, fileName, contentType, fileSize, 'video');
-        await sendMediaToOrchestrator([
-          { media_type: 'video', s3_key, content_type: contentType, size_bytes: fileSize },
-        ]);
-      } catch (e) {
-        Alert.alert('Upload Failed', e instanceof Error ? e.message : 'Could not upload video');
-      } finally {
-        setMediaUploading(false);
-      }
-    } catch (error) {
-      console.error('Video picker error:', error);
-      Alert.alert('Error', 'Failed to pick video');
-    }
-  };
-
-  const handleVoiceSearch = async () => {
+  const handleVoice = async () => {
     try {
       const { status } = await Audio.requestPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('Permission Required', 'Please grant microphone access to record audio.');
+        Alert.alert('Microphone needed', 'Grant microphone access to use voice search.');
         return;
       }
       await Audio.setAudioModeAsync({
@@ -211,460 +155,333 @@ export const SearchScreen: React.FC = () => {
       await recording.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
       recordingRef.current = recording;
       await recording.startAsync();
-      Alert.alert(
-        'Recording',
-        'Tap OK when you are done speaking.',
-        [
-          {
-            text: 'Stop & Send',
-            onPress: async () => {
-              try {
-                await recording.stopAndUnloadAsync();
-                const uri = recording.getURI();
-                recordingRef.current = null;
-                if (!uri) {
-                  Alert.alert('Error', 'No recording saved');
-                  return;
-                }
-                const fileName = `audio_${Date.now()}.m4a`;
-                const contentType = 'audio/m4a';
-                const fileSize = await getFileSize(uri);
-                setMediaUploading(true);
-                try {
-                  const { s3_key } = await uploadMediaFile(uri, fileName, contentType, fileSize, 'audio');
-                  await sendMediaToOrchestrator([
-                    { media_type: 'audio', s3_key, content_type: contentType, size_bytes: fileSize },
-                  ]);
-                } catch (e) {
-                  Alert.alert('Upload Failed', e instanceof Error ? e.message : 'Could not upload audio');
-                } finally {
-                  setMediaUploading(false);
-                }
-              } catch (e) {
-                Alert.alert('Error', e instanceof Error ? e.message : 'Failed to stop recording');
-              }
-            },
-          },
-          { text: 'Cancel', style: 'cancel', onPress: async () => {
+      Alert.alert('Listening…', 'Speak your question, then tap Stop & Send.', [
+        {
+          text: 'Stop & Send',
+          onPress: async () => {
             try {
               await recording.stopAndUnloadAsync();
-            } catch {
-              // ignore
+              const uri = recording.getURI();
+              recordingRef.current = null;
+              if (!uri) return;
+              setMediaUploading(true);
+              try {
+                const fileSize = await getFileSize(uri);
+                const { s3_key } = await uploadMediaFile(uri, `audio_${Date.now()}.m4a`, 'audio/m4a', fileSize, 'audio');
+                await sendMediaToOrchestrator([{ media_type: 'audio', s3_key, content_type: 'audio/m4a', size_bytes: fileSize }]);
+              } catch (e) {
+                Alert.alert('Upload failed', e instanceof Error ? e.message : 'Could not upload audio');
+              } finally {
+                setMediaUploading(false);
+              }
+            } catch (e) {
+              Alert.alert('Error', e instanceof Error ? e.message : 'Failed to stop recording');
             }
+          },
+        },
+        {
+          text: 'Cancel',
+          style: 'cancel',
+          onPress: async () => {
+            try { await recording.stopAndUnloadAsync(); } catch {}
             recordingRef.current = null;
-          } },
-        ]
-      );
-    } catch (error) {
-      console.error('Voice recording error:', error);
+          },
+        },
+      ]);
+    } catch {
       Alert.alert('Error', 'Failed to start recording');
     }
   };
 
+  const handlePhoto = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Photo access needed', 'Grant access to search with photos.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [4, 3],
+      quality: 0.8,
+    });
+    if (result.canceled || !result.assets[0]) return;
+    const asset = result.assets[0];
+    const uri = asset.uri;
+    setMediaUploading(true);
+    try {
+      const fileName = uri.split('/').pop() ?? `image_${Date.now()}.jpg`;
+      const fileSize = asset.fileSize ?? (await getFileSize(uri));
+      const { s3_key } = await uploadMediaFile(uri, fileName, 'image/jpeg', fileSize, 'image');
+      await sendMediaToOrchestrator([{ media_type: 'image', s3_key, content_type: 'image/jpeg', size_bytes: fileSize }]);
+    } catch (e) {
+      Alert.alert('Upload failed', e instanceof Error ? e.message : 'Could not upload image');
+    } finally {
+      setMediaUploading(false);
+    }
+  };
 
-  const handleSuggestionPress = (suggestion: string) => {
-    setSearchQuery(suggestion);
+  const handleVideo = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') return;
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+      allowsEditing: false,
+    });
+    if (result.canceled || !result.assets[0]) return;
+    const asset = result.assets[0];
+    const uri = asset.uri;
+    setMediaUploading(true);
+    try {
+      const fileName = uri.split('/').pop() ?? `video_${Date.now()}.mp4`;
+      const fileSize = asset.fileSize ?? (await getFileSize(uri));
+      const { s3_key } = await uploadMediaFile(uri, fileName, 'video/mp4', fileSize, 'video');
+      await sendMediaToOrchestrator([{ media_type: 'video', s3_key, content_type: 'video/mp4', size_bytes: fileSize }]);
+    } catch (e) {
+      Alert.alert('Upload failed', e instanceof Error ? e.message : 'Could not upload video');
+    } finally {
+      setMediaUploading(false);
+    }
+  };
+
+  const handleSign = () => {
+    router.push('/(tabs)/asl');
+  };
+
+  const handleModeAction = (key: typeof QUICK_MODES[number]['key']) => {
+    if (mediaUploading) return;
+    if (key === 'voice') return handleVoice();
+    if (key === 'photo') return handlePhoto();
+    if (key === 'video') return handleVideo();
+    if (key === 'sign') return handleSign();
+  };
+
+  const goToChat = () => {
+    const q = searchQuery.trim();
+    if (q) {
+      router.push({ pathname: '/(tabs)/chat', params: { prefill: q } });
+    } else {
+      router.push('/(tabs)/chat');
+    }
   };
 
   return (
-    <ScrollView 
-      style={[styles.container, { backgroundColor: colors.background }]}
-      contentContainerStyle={[
-        styles.contentContainer,
-        { paddingBottom: insets.bottom } // Space for tab bar (60px) + safe area + extra padding
-      ]}
-      showsVerticalScrollIndicator={false}
-    >
-      {/* AI Assistant Header - Modern Design */}
-      <View style={[styles.aiCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-        <View style={styles.aiCardContent}>
-          <View style={styles.aiHeaderRow}>
-            <View style={[styles.aiAvatarContainer, { backgroundColor: colors.primary + '15' }]}>
-              <View style={[styles.aiAvatar, { backgroundColor: colors.primary }]}>
-                <Ionicons name="sparkles" size={24} color="#FFFFFF" />
-              </View>
-              <View style={[styles.aiStatusIndicator, { backgroundColor: colors.success, borderColor: colors.surface }]} />
-            </View>
-            <View style={styles.aiInfoContainer}>
-              <Text style={[styles.aiName, { color: colors.text }]}>AI Shopping Assistant</Text>
-              <View style={styles.aiTypingIndicator}>
-                <View style={[styles.typingDot, { backgroundColor: colors.textSecondary }]} />
-                <View style={[styles.typingDot, { backgroundColor: colors.textSecondary }]} />
-                <View style={[styles.typingDot, { backgroundColor: colors.textSecondary }]} />
-                <Text style={[styles.aiStatus, { color: colors.textSecondary }]}>Online</Text>
-              </View>
-            </View>
-          </View>
-          <View style={[styles.aiMessageBubble, { backgroundColor: colors.background, borderLeftColor: colors.primary }]}>
-            <Text style={[styles.aiMessageText, { color: colors.text }]}>
-              👋 Hi there! I'm here to help you find exactly what you're looking for. Ask me anything about products, compare prices, or get personalized recommendations!
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <WhisperBackground />
+      <ScrollView
+        style={styles.flex}
+        contentContainerStyle={[
+          styles.content,
+          { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 96 },
+        ]}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Hero header — display text + breathing orb (tighter on phone widths) */}
+        <View style={styles.heroRow}>
+          <View style={styles.heroText}>
+            <Text style={[typography.label, { color: colors.textSecondary }]}>TALKNSHOP</Text>
+            <Text
+              style={[
+                typography.h1,
+                {
+                  color: colors.text,
+                  marginTop: 6,
+                  fontSize: 34,
+                  lineHeight: 38,
+                  letterSpacing: -0.7,
+                },
+              ]}
+              numberOfLines={2}
+            >
+              Find anything.{"\n"}
+              <Text style={{ color: colors.primary }}>Any way.</Text>
             </Text>
           </View>
+          <PressableScale onPress={goToChat} haptic="light">
+            <AuroraOrb size={56} state="idle" />
+          </PressableScale>
         </View>
-      </View>
 
-      {/* Conversational Search Input */}
-      <View style={styles.searchContainer}>
-        <View style={[styles.searchBar, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          <Ionicons name="chatbubble-ellipses" size={20} color={colors.primary} style={styles.searchIcon} />
+        {/* Search input */}
+        <View
+          style={[
+            styles.searchBar,
+            {
+              backgroundColor: colors.surfaceSunk ?? colors.surface,
+              borderColor: colors.borderStrong ?? colors.border,
+            },
+          ]}
+        >
+          <Ionicons name="search" size={20} color={colors.textSecondary} />
           <TextInput
-            style={[styles.searchInput, { color: colors.text }]}
-            placeholder="Ask me anything... 'Show me best headphones'"
-            placeholderTextColor={colors.textSecondary}
+            style={[styles.searchInput, { color: colors.text, fontFamily: 'Geist_500Medium' }]}
+            placeholder="What are you shopping for?"
+            placeholderTextColor={colors.textTertiary ?? colors.textSecondary}
             value={searchQuery}
             onChangeText={setSearchQuery}
-            onSubmitEditing={handleSearch}
+            onSubmitEditing={goToChat}
             returnKeyType="search"
           />
-          {searchQuery.length > 0 && (
-            <TouchableOpacity onPress={() => setSearchQuery('')} style={styles.clearButton}>
+          {searchQuery.length > 0 ? (
+            <PressableScale onPress={() => setSearchQuery('')} hitSlop={10} haptic="light">
               <Ionicons name="close-circle" size={20} color={colors.textSecondary} />
-            </TouchableOpacity>
-          )}
+            </PressableScale>
+          ) : null}
         </View>
-        
-        {/* Quick Action Buttons: Voice (audio), Video, Photo - upload and send to assistant */}
-        <View style={styles.quickActions}>
-          <TouchableOpacity
-            style={[styles.quickActionButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
-            onPress={handleVoiceSearch}
-            disabled={mediaUploading}
-            activeOpacity={0.7}
-          >
-            {mediaUploading ? (
-              <ActivityIndicator size="small" color={colors.primary} />
-            ) : (
-              <Ionicons name="mic" size={18} color={colors.primary} />
-            )}
-            <Text style={[styles.quickActionText, { color: colors.text }]}>Voice</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.quickActionButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
-            onPress={handleVideoSearch}
-            disabled={mediaUploading}
-            activeOpacity={0.7}
-          >
-            <Ionicons name="videocam" size={18} color={colors.primary} />
-            <Text style={[styles.quickActionText, { color: colors.text }]}>Video</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.quickActionButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
-            onPress={handleImageSearch}
-            disabled={mediaUploading}
-            activeOpacity={0.7}
-          >
-            <Ionicons name="camera" size={18} color={colors.primary} />
-            <Text style={[styles.quickActionText, { color: colors.text }]}>Photo</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
 
-      {/* Conversation Starters */}
-      {!isSearching && !searchQuery.trim() && (
-        <View style={styles.conversationSection}>
-          <Text style={[styles.sectionTitle, { color: colors.text, ...typography.h3 }]}>
-            💬 Try Asking
-          </Text>
-          <View style={styles.conversationGrid}>
-            {CONVERSATION_STARTERS.map((starter, index) => (
-              <TouchableOpacity
-                key={index}
-                style={[styles.conversationCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
-                onPress={() => handleSuggestionPress(starter)}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="chatbubble-outline" size={20} color={colors.primary} />
-                <Text style={[styles.conversationText, { color: colors.text }]}>{starter}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
-      )}
-
-
-
-      {/* Products Section */}
-      <View style={[styles.productsSection, { backgroundColor: colors.background }]}>
-        <View style={styles.sectionHeader}>
-          <Text style={[styles.sectionTitle, { color: colors.text, ...typography.h3 }]}>
-            {isSearching && searchQuery.trim() 
-              ? `Search Results (${displayedProducts.length})` 
-              : 'Featured Products'}
-          </Text>
-          {isSearching && searchQuery.trim() && (
-            <TouchableOpacity
-              onPress={() => {
-                setSearchQuery('');
-                setIsSearching(false);
-                setSearchResults([]);
-              }}
-              style={styles.clearSearchButton}
+        {/* Modality row — equally-weighted "Ask. Show. Sign." affordances */}
+        <View style={styles.modeRow}>
+          {QUICK_MODES.map((m) => (
+            <PressableScale
+              key={m.key}
+              onPress={() => handleModeAction(m.key)}
+              haptic="selection"
+              style={styles.modeBtnWrap}
             >
-              <Ionicons name="close-circle" size={20} color={colors.textSecondary} />
-              <Text style={[styles.clearSearchText, { color: colors.textSecondary }]}>Clear</Text>
-            </TouchableOpacity>
-          )}
+              <View
+                style={[
+                  styles.modeBtn,
+                  {
+                    backgroundColor: colors.surface,
+                    borderColor: colors.border,
+                  },
+                ]}
+              >
+                <IconBadge icon={m.icon} size="sm" variant="subtle" />
+                <Text style={[typography.bodyMd, { color: colors.text }]}>{m.label}</Text>
+              </View>
+            </PressableScale>
+          ))}
         </View>
 
-        {displayedProducts.length > 0 ? (
-          <FlatList
-            data={displayedProducts}
-            renderItem={({ item }) => (
-              <ProductCard product={item} onPress={handleProductPress} />
-            )}
-            keyExtractor={(item) => item.id}
-            scrollEnabled={false}
-            style={{ backgroundColor: colors.background }}
-            contentContainerStyle={styles.productsList}
-          />
-        ) : (
-          <View style={[styles.emptyState, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-            <Ionicons name="search-outline" size={48} color={colors.textSecondary} />
-            <Text style={[styles.emptyText, { color: colors.text }]}>
-              {isSearching && searchQuery.trim()
-                ? 'No products found'
-                : 'Start searching to find products'}
-            </Text>
-            <Text style={[styles.emptySubtext, { color: colors.textSecondary }]}>
-              Ask me anything or try the suggestions above!
-            </Text>
+        {mediaUploading ? (
+          <View style={styles.uploadingRow}>
+            <ActivityIndicator size="small" color={colors.primary} />
+            <Text style={[typography.caption, { color: colors.textSecondary }]}>Sending to assistant…</Text>
           </View>
-        )}
-      </View>
-    </ScrollView>
+        ) : null}
+
+        {/* Trending searches */}
+        {!isSearching ? (
+          <View style={styles.section}>
+            <SectionHeader title="Trending" eyebrow="WHAT EVERYONE'S ASKING" />
+            <View style={styles.chipWrap}>
+              {TRENDING_SEARCHES.map((q) => (
+                <Chip
+                  key={q}
+                  label={q}
+                  icon="trending-up"
+                  onPress={() => router.push({ pathname: '/(tabs)/chat', params: { prefill: q } })}
+                />
+              ))}
+            </View>
+          </View>
+        ) : null}
+
+        {/* Products */}
+        <View style={styles.section}>
+          <SectionHeader
+            title={isSearching ? `Results for "${searchQuery.trim()}"` : 'Featured'}
+            eyebrow={isSearching ? `${displayedProducts.length} MATCHES` : 'HAND-PICKED FOR YOU'}
+            actionLabel={isSearching ? 'Clear' : undefined}
+            onActionPress={isSearching ? () => setSearchQuery('') : undefined}
+          />
+          {displayedProducts.length > 0 ? (
+            <View style={styles.grid}>
+              {displayedProducts.map((p, idx) => (
+                <View key={p.id} style={[styles.gridCell, idx % 2 === 0 ? { paddingRight: 6 } : { paddingLeft: 6 }]}>
+                  <ProductTile product={p} onPress={handleProductPress} />
+                </View>
+              ))}
+            </View>
+          ) : (
+            <View style={styles.emptyHint}>
+              <Ionicons name="leaf-outline" size={20} color={colors.textTertiary ?? colors.textSecondary} />
+              <Text style={[typography.body, { color: colors.textSecondary, flex: 1 }]}>
+                Nothing matched. Try the AI — it understands "comfy running shoes for flat feet under $100."
+              </Text>
+            </View>
+          )}
+        </View>
+      </ScrollView>
+    </View>
   );
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  contentContainer: {
+  container: { flex: 1 },
+  flex: { flex: 1 },
+  content: {
     paddingHorizontal: 20,
-    paddingTop: 16,
+    gap: 24,
   },
-  aiCard: {
-    borderRadius: 20,
-    borderWidth: 1,
-    marginBottom: 24,
-    overflow: 'hidden',
-    elevation: 3,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-  },
-  aiCardContent: {
-    padding: 20,
-  },
-  aiHeaderRow: {
+  heroRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 16,
-  },
-  aiAvatarContainer: {
-    position: 'relative',
-    marginRight: 12,
-    padding: 4,
-    borderRadius: 28,
-  },
-  aiAvatar: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-  },
-  aiStatusIndicator: {
-    position: 'absolute',
-    bottom: 2,
-    right: 2,
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    borderWidth: 3,
-  },
-  aiInfoContainer: {
-    flex: 1,
-  },
-  aiName: {
-    fontSize: 18,
-    fontWeight: '700',
+    justifyContent: 'space-between',
+    gap: 12,
     marginBottom: 4,
   },
-  aiTypingIndicator: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  typingDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  aiStatus: {
-    fontSize: 12,
-    marginLeft: 4,
-    fontWeight: '500',
-  },
-  aiMessageBubble: {
-    borderRadius: 16,
-    paddingHorizontal: 18,
-    paddingVertical: 14,
-    borderLeftWidth: 3,
-  },
-  aiMessageText: {
-    fontSize: 15,
-    lineHeight: 22,
-    fontWeight: '400',
-  },
-  searchContainer: {
-    marginBottom: 24,
+  heroText: {
+    flex: 1,
   },
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: 16,
-    borderWidth: 1,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-  },
-  searchIcon: {
-    marginRight: 12,
+    gap: 12,
+    paddingHorizontal: 18,
+    paddingVertical: Platform.OS === 'ios' ? 16 : 12,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   searchInput: {
     flex: 1,
     fontSize: 16,
     paddingVertical: 0,
   },
-  clearButton: {
-    marginLeft: 8,
-    padding: 4,
-  },
-  quickActions: {
+  modeRow: {
     flexDirection: 'row',
-    gap: 12,
-    marginTop: 12,
+    gap: 10,
   },
-  quickActionButton: {
+  modeBtnWrap: {
     flex: 1,
+  },
+  modeBtn: {
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  uploadingRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 12,
-    borderWidth: 1,
-    gap: 8,
+    gap: 10,
+    paddingHorizontal: 4,
   },
-  quickActionText: {
-    fontSize: 14,
-    fontWeight: '600',
+  section: {
+    gap: 12,
   },
-  suggestionsSection: {
-    marginBottom: 24,
-  },
-  suggestionsGrid: {
+  chipWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',
+    gap: 8,
+  },
+  grid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+  },
+  gridCell: {
+    width: '50%',
+    paddingBottom: 12,
+  },
+  emptyHint: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 10,
-    marginTop: 12,
-  },
-  suggestionChip: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 20,
-    borderWidth: 1,
-  },
-  suggestionText: {
-    fontSize: 13,
-    fontWeight: '500',
-  },
-  conversationSection: {
-    marginBottom: 24,
-  },
-  conversationGrid: {
-    gap: 12,
-    marginTop: 12,
-  },
-  conversationCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 16,
-    borderRadius: 16,
-    borderWidth: 1,
-    gap: 12,
-  },
-  conversationText: {
-    flex: 1,
-    fontSize: 15,
-    fontWeight: '500',
-  },
-  sectionTitle: {
-    marginBottom: 12,
-    fontWeight: '600',
-    fontSize: 18,
-  },
-  recentSearches: {
-    marginBottom: 32,
-  },
-  searchHistory: {
-    padding: 24,
-    borderRadius: 16,
-    borderWidth: 1,
-    alignItems: 'center',
-    marginTop: 8,
-  },
-  productsSection: {
-    marginBottom: 32,
-  },
-  sectionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  clearSearchButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-  },
-  clearSearchText: {
-    fontSize: 14,
-    fontWeight: '500',
-  },
-  productsList: {
-    paddingBottom: 8,
-  },
-  emptyState: {
-    padding: 32,
-    borderRadius: 16,
-    borderWidth: 1,
-    alignItems: 'center',
-    marginTop: 8,
-  },
-  emptySubtext: {
-    fontSize: 12,
-    textAlign: 'center',
-    marginTop: 8,
-    opacity: 0.7,
-  },
-  emptyText: {
-    fontSize: 16,
-    textAlign: 'center',
-    fontWeight: '600',
-    marginTop: 16,
+    paddingHorizontal: 4,
+    paddingVertical: 8,
   },
 });

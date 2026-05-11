@@ -1,56 +1,30 @@
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '@/hooks/useTheme';
-import { Platform, StyleSheet } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { FloatingTabBar } from '@/components/ui/FloatingTabBar';
 
+/**
+ * Tab bar — 4 visible tabs (Discover · Sell · Talk · You).
+ * Legacy tabs (asl, wishlist, orders) stay routable but hidden from the bar
+ * so existing deep-links continue to work.
+ */
 export default function TabLayout() {
-  const { colors, isDark } = useTheme();
-  const insets = useSafeAreaInsets();
-  const bottomPad = Math.max(insets.bottom, Platform.OS === 'android' ? 8 : 0);
+  const { colors } = useTheme();
 
   return (
     <Tabs
+      tabBar={(props) => <FloatingTabBar {...props} />}
       screenOptions={{
-        tabBarActiveTintColor: colors.primary,
-        // Slightly brighter than textSecondary so labels stay readable on black tab bar
-        tabBarInactiveTintColor: isDark ? '#AEAEB2' : colors.textSecondary,
-        // Many tabs: horizontal scroll avoids cramped labels on narrow phones
-        tabBarScrollEnabled: true,
-        tabBarShowLabel: true,
-        tabBarLabelStyle: {
-          fontSize: 11,
-          fontWeight: '600',
-          marginTop: 2,
-          marginBottom: 0,
-        },
-        tabBarIconStyle: { marginTop: 0 },
-        tabBarItemStyle: {
-          minWidth: 56,
-          paddingHorizontal: 6,
-          paddingVertical: 2,
-        },
-        tabBarStyle: {
-          backgroundColor: colors.background,
-          borderTopColor: colors.border,
-          borderTopWidth: StyleSheet.hairlineWidth,
-          // Let the bar size to content; fixed height + safe area was clipping labels
-          paddingBottom: bottomPad,
-          paddingTop: 6,
-          minHeight: 64 + bottomPad,
-          elevation: 0,
-          shadowOpacity: 0,
-        },
         headerShown: false,
-        contentStyle: { backgroundColor: colors.background }, // Ensure black background for all tab screens
+        contentStyle: { backgroundColor: colors.background },
       }}
     >
       <Tabs.Screen
         name="index"
         options={{
-          title: 'Search',
+          title: 'Discover',
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="search" size={size} color={color} />
+            <Ionicons name="sparkles" size={size} color={color} />
           ),
         }}
       />
@@ -59,55 +33,33 @@ export default function TabLayout() {
         options={{
           title: 'Sell',
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="add-circle" size={size} color={color} />
+            <Ionicons name="add-circle-outline" size={size} color={color} />
           ),
         }}
       />
       <Tabs.Screen
         name="chat"
         options={{
-          title: 'Chat',
+          title: 'Talk',
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="chatbubbles" size={size} color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="asl"
-        options={{
-          title: 'ASL',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="hand-left" size={size} color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="wishlist"
-        options={{
-          title: 'Wishlist',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="heart" size={size} color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="orders"
-        options={{
-          title: 'Orders',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="receipt" size={size} color={color} />
+            <Ionicons name="chatbubbles-outline" size={size} color={color} />
           ),
         }}
       />
       <Tabs.Screen
         name="profile"
         options={{
-          title: 'Profile',
+          title: 'You',
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="person" size={size} color={color} />
+            <Ionicons name="person-outline" size={size} color={color} />
           ),
         }}
       />
+
+      {/* Hidden but still routable — accessed via deep-links / in-app CTAs */}
+      <Tabs.Screen name="asl" options={{ href: null }} />
+      <Tabs.Screen name="wishlist" options={{ href: null }} />
+      <Tabs.Screen name="orders" options={{ href: null }} />
     </Tabs>
   );
 }

@@ -1,11 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, router } from 'expo-router';
 import {
   View,
   Text,
   StyleSheet,
   TextInput,
-  TouchableOpacity,
   ScrollView,
   KeyboardAvoidingView,
   Platform,
@@ -13,11 +12,28 @@ import {
   Linking,
   ActivityIndicator,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '@/hooks/useTheme';
 import { useAuth } from '@/components/AuthProvider';
 import { Ionicons } from '@expo/vector-icons';
 import { OrchestratorWebSocketClient, OrchestratorServerEvent } from '@/services/orchestratorWebSocket';
+import {
+  AuroraOrb,
+  Chip,
+  IconBadge,
+  PressableScale,
+  WhisperBackground,
+  type OrbState,
+} from '@/components/ui';
+import { LinearGradient } from 'expo-linear-gradient';
+import { AURORA_COLORS, AURORA_LOCATIONS } from '@/constants/theme';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withSequence,
+  withTiming,
+  Easing as RNEasing,
+} from 'react-native-reanimated';
 
 type OrchestratorProduct = {
   product_id?: string;
@@ -47,6 +63,8 @@ type ChatItem =
     }
   | { id: string; kind: 'results'; products: OrchestratorProduct[]; summary?: string };
 
+// ── JSON-blob filters (untouched from previous implementation) ────────────────
+
 function normalizeSuggestionList(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   return raw
@@ -63,7 +81,6 @@ function normalizeSuggestionList(raw: unknown): string[] {
     .filter(Boolean);
 }
 
-/** LLM / graph often wraps JSON in markdown fences; stream may be partial so we also regex raw text. */
 function stripMarkdownJsonFence(text: string): string {
   const t = text.trim();
   const fenced = /^```(?:json)?\s*\n?([\s\S]*?)\n?```\s*$/im.exec(t);
@@ -74,20 +91,13 @@ function stripMarkdownJsonFence(text: string): string {
 const INTERNAL_JSON_KEY_RE =
   /"(product_type|requirement_spec|attributes|suggestions|question|context|clarifying_question|filters|pagination|price|brand|category)"\s*:/;
 
-/**
- * Hide requirement-spec blobs, clarification JSON, and ```json streams — not meant for the user.
- */
 function shouldHideAssistantBlob(text: string): boolean {
   const raw = text.trim();
   if (!raw) return false;
-
   if (raw.startsWith('```') || raw.includes('```json')) return true;
-
   const inner = stripMarkdownJsonFence(raw);
   if (!inner.startsWith('{') && !inner.startsWith('[')) return false;
-
   if (INTERNAL_JSON_KEY_RE.test(inner) || INTERNAL_JSON_KEY_RE.test(raw)) return true;
-
   try {
     const parsed = JSON.parse(inner) as unknown;
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
@@ -105,10 +115,8 @@ function shouldHideAssistantBlob(text: string): boolean {
       if (keys.some((k) => markers.includes(k))) return true;
     }
   } catch {
-    // Incomplete JSON during parse — still hide if it looks like graph output
     if (inner.startsWith('{') && INTERNAL_JSON_KEY_RE.test(inner)) return true;
   }
-
   return false;
 }
 
@@ -134,6 +142,8 @@ function pruneTrailingHiddenAssistant(items: ChatItem[]): ChatItem[] {
   return next;
 }
 
+// ── Starter prompts (3 only, full-width rows, no emoji) ───────────────────────
+
 type StarterIdea = {
   icon: React.ComponentProps<typeof Ionicons>['name'];
   title: string;
@@ -142,41 +152,29 @@ type StarterIdea = {
 
 const STARTER_IDEAS: StarterIdea[] = [
   {
-    icon: 'football-outline',
-    title: 'Running shoes',
-    message: 'I need comfortable running shoes under $100',
+    icon: 'flash-outline',
+    title: 'Fast wireless earbuds',
+    message: 'Wireless noise-cancelling earbuds under $200',
   },
   {
     icon: 'laptop-outline',
     title: 'Student laptop',
-    message: 'Show me lightweight laptops for students under $800',
+    message: 'Lightweight laptop for a college student under $800',
   },
   {
-    icon: 'shirt-outline',
-    title: 'Winter jacket',
-    message: 'I want a warm winter jacket, preferably waterproof',
-  },
-  {
-    icon: 'cafe-outline',
-    title: 'Coffee gear',
-    message: 'Find a good drip coffee maker under $80',
-  },
-  {
-    icon: 'headset-outline',
-    title: 'Headphones',
-    message: 'Wireless noise-cancelling headphones under $200',
-  },
-  {
-    icon: 'gift-outline',
-    title: 'Gifts under $50',
-    message: 'Suggest gift ideas under $50 for a birthday',
+    icon: 'home-outline',
+    title: 'Cozy coffee maker',
+    message: 'Quiet drip coffee maker under $80',
   },
 ];
+
+// ── Main screen ───────────────────────────────────────────────────────────────
 
 export default function ChatScreen() {
   const { colors, typography } = useTheme();
   const { user } = useAuth();
   const { prefill } = useLocalSearchParams<{ prefill?: string }>();
+  const insets = useSafeAreaInsets();
 
   const [isConnecting, setIsConnecting] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
@@ -184,66 +182,40 @@ export default function ChatScreen() {
   const [input, setInput] = useState('');
   const [streamingText, setStreamingText] = useState<string>('');
   const [needsClarification, setNeedsClarification] = useState(false);
-  /** Single in-place loading line (replaces stacking progress bubbles) */
   const [activityLine, setActivityLine] = useState<string | null>(null);
 
-  const insets = useSafeAreaInsets();
-  const [toast, setToast] = useState<string | null>(null);
-  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const showToast = (message: string) => {
-    if (toastTimerRef.current) {
-      clearTimeout(toastTimerRef.current);
-      toastTimerRef.current = null;
-    }
-    setToast(message);
-    toastTimerRef.current = setTimeout(() => {
-      setToast(null);
-      toastTimerRef.current = null;
-    }, 2800);
-  };
-
-  useEffect(() => {
-    return () => {
-      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    };
-  }, []);
   const idCounterRef = useRef(0);
   const lastAssistantTextRef = useRef<string>('');
-  /** LLM streams JSON for ask_clarifying_q; hide it until structured clarification event arrives */
   const streamIsJsonRef = useRef(false);
   const streamingTextRef = useRef('');
   const scrollRef = useRef<ScrollView | null>(null);
 
   const nextId = (prefix: 'sys' | 'u' | 'a') => {
-    // Date.now() alone can collide when multiple events arrive in the same millisecond
     const n = idCounterRef.current++;
     return `${prefix}_${Date.now()}_${n}`;
   };
 
-  const userId = useMemo(() => {
-    // Orchestrator requires a user_id query param; for demo we can use email or fallback.
-    return user?.email || user?.id || 'demo_user';
-  }, [user?.email, user?.id]);
-
-  const sessionId = useMemo(() => {
-    // Stable for the lifecycle of this screen instance.
-    return `sess_${Math.random().toString(16).slice(2, 10)}${Date.now().toString(16).slice(-4)}`;
-  }, []);
+  const userId = useMemo(() => user?.email || user?.id || 'demo_user', [user?.email, user?.id]);
+  const sessionId = useMemo(() => `sess_${Math.random().toString(16).slice(2, 10)}${Date.now().toString(16).slice(-4)}`, []);
 
   const clientRef = useRef<OrchestratorWebSocketClient | null>(null);
-  /** Multiple connect() callers (mount + quick tap on starters) must share one attempt. */
   const connectInFlightRef = useRef<Promise<void> | null>(null);
   const chatScreenActiveRef = useRef(true);
+
+  // Orb state derives from server activity (idle / listening / thinking / responding)
+  const orbState: OrbState = useMemo(() => {
+    if (streamingText.length > 0) return 'responding';
+    if (activityLine != null) return 'thinking';
+    if (isConnecting) return 'thinking';
+    return 'idle';
+  }, [streamingText, activityLine, isConnecting]);
 
   const appendSystem = (text: string) => {
     setMessages((prev) => [...prev, { id: nextId('sys'), kind: 'text', role: 'system', text }]);
   };
-
   const appendUser = (text: string) => {
     setMessages((prev) => [...prev, { id: nextId('u'), kind: 'text', role: 'user', text }]);
   };
-
   const appendAssistant = (text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
@@ -252,34 +224,19 @@ export default function ChatScreen() {
     lastAssistantTextRef.current = trimmed;
     setMessages((prev) => [...prev, { id: nextId('a'), kind: 'text', role: 'assistant', text: trimmed }]);
   };
-
   const appendResults = (products: OrchestratorProduct[], summary?: string) => {
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: nextId('a'),
-        kind: 'results',
-        products,
-        summary,
-      },
-    ]);
+    setMessages((prev) => [...prev, { id: nextId('a'), kind: 'results', products, summary }]);
   };
 
   const openProductLink = async (product: OrchestratorProduct) => {
     const url = product.deep_link || product.marketplace_url;
-    if (!url) {
-      appendSystem('No product link available for this item.');
-      return;
-    }
+    if (!url) return appendSystem('No product link available.');
     try {
       const supported = await Linking.canOpenURL(url);
-      if (!supported) {
-        appendSystem(`Cannot open URL: ${url}`);
-        return;
-      }
+      if (!supported) return appendSystem(`Cannot open URL: ${url}`);
       await Linking.openURL(url);
     } catch (e) {
-      appendSystem(`Failed to open URL: ${(e as Error)?.message || String(e)}`);
+      appendSystem(`Failed to open: ${(e as Error)?.message || String(e)}`);
     }
   };
 
@@ -288,10 +245,7 @@ export default function ChatScreen() {
       setIsConnected(true);
       return Promise.resolve();
     }
-
-    if (connectInFlightRef.current) {
-      return connectInFlightRef.current;
-    }
+    if (connectInFlightRef.current) return connectInFlightRef.current;
 
     const promise = (async () => {
       setIsConnecting(true);
@@ -308,17 +262,14 @@ export default function ChatScreen() {
             streamingTextRef.current = '';
             return;
           }
-
           if (event.type === 'thinking') {
             setActivityLine(String(event.data?.message || 'Thinking…').trim());
             return;
           }
-
           if (event.type === 'progress') {
             setActivityLine(String(event.data?.message || 'Working…').trim());
             return;
           }
-
           if (event.type === 'token') {
             setActivityLine(null);
             const token = String(event.data?.content || '');
@@ -335,7 +286,6 @@ export default function ChatScreen() {
             });
             return;
           }
-
           if (event.type === 'clarification') {
             streamIsJsonRef.current = false;
             streamingTextRef.current = '';
@@ -351,29 +301,17 @@ export default function ChatScreen() {
             const suggestions = normalizeSuggestionList(event.data?.suggestions);
             setMessages((prev) => {
               const pruned = pruneTrailingHiddenAssistant(prev);
-              return [
-                ...pruned,
-                {
-                  id: nextId('a'),
-                  kind: 'clarification',
-                  question,
-                  context,
-                  suggestions,
-                },
-              ];
+              return [...pruned, { id: nextId('a'), kind: 'clarification', question, context, suggestions }];
             });
             return;
           }
-
           if (event.type === 'results') {
             setActivityLine(null);
             const products = Array.isArray(event.data?.products) ? (event.data.products as OrchestratorProduct[]) : [];
-            const count = products.length;
             const finalResponse = event.data?.final_response ? String(event.data.final_response) : undefined;
-            appendResults(products, finalResponse || `Found ${count} products`);
+            appendResults(products, finalResponse || `Found ${products.length} matches`);
             return;
           }
-
           if (event.type === 'error') {
             streamIsJsonRef.current = false;
             streamingTextRef.current = '';
@@ -382,27 +320,16 @@ export default function ChatScreen() {
             appendSystem(`Error: ${event.data?.error || 'Unknown error'}`);
             return;
           }
-
           if (event.type === 'done') {
             streamIsJsonRef.current = false;
             setActivityLine(null);
             let buffered = streamingTextRef.current.trim();
             streamingTextRef.current = '';
             setStreamingText('');
-            if (shouldHideAssistantBlob(buffered)) {
-              buffered = '';
-            }
+            if (shouldHideAssistantBlob(buffered)) buffered = '';
             const msg = event.data?.message ? String(event.data.message).trim() : '';
-
-            if (buffered) {
-              appendAssistant(buffered);
-            }
-
-            if (msg && !shouldHideAssistantBlob(msg)) {
-              if (msg !== buffered) {
-                appendAssistant(msg);
-              }
-            }
+            if (buffered) appendAssistant(buffered);
+            if (msg && !shouldHideAssistantBlob(msg) && msg !== buffered) appendAssistant(msg);
             setNeedsClarification(false);
             return;
           }
@@ -411,29 +338,16 @@ export default function ChatScreen() {
         await client.connect();
 
         if (!chatScreenActiveRef.current) {
-          try {
-            unsubscribe?.();
-            client.disconnect();
-          } catch {
-            // ignore
-          }
+          try { unsubscribe?.(); client.disconnect(); } catch {}
           clientRef.current = null;
           return;
         }
 
         (clientRef.current as any).__unsubscribe = unsubscribe;
       } catch (e) {
-        showToast('Something went wrong. Please try again.');
         setIsConnected(false);
-        try {
-          unsubscribe?.();
-          client?.disconnect();
-        } catch {
-          // ignore
-        }
-        if (clientRef.current === client) {
-          clientRef.current = null;
-        }
+        try { unsubscribe?.(); client?.disconnect(); } catch {}
+        if (clientRef.current === client) clientRef.current = null;
         throw e;
       } finally {
         setIsConnecting(false);
@@ -442,9 +356,7 @@ export default function ChatScreen() {
 
     connectInFlightRef.current = promise;
     promise.finally(() => {
-      if (connectInFlightRef.current === promise) {
-        connectInFlightRef.current = null;
-      }
+      if (connectInFlightRef.current === promise) connectInFlightRef.current = null;
     });
     return promise;
   };
@@ -455,9 +367,7 @@ export default function ChatScreen() {
       try {
         const unsub = (client as any).__unsubscribe as undefined | (() => void);
         unsub?.();
-      } catch {
-        // ignore
-      }
+      } catch {}
       client.disconnect();
       clientRef.current = null;
     }
@@ -469,24 +379,12 @@ export default function ChatScreen() {
   const sendWithText = async (textRaw: string) => {
     const text = textRaw.trim();
     if (!text) return;
-
-    try {
-      await connect();
-    } catch {
-      return;
-    }
-
+    try { await connect(); } catch { return; }
     const client = clientRef.current;
-    if (!client?.isConnected()) {
-      showToast('Something went wrong. Please try again.');
-      return;
-    }
+    if (!client?.isConnected()) return;
 
-    // Flush any partial assistant stream before sending next message
     const pending = streamingTextRef.current.trim();
-    if (pending && !shouldHideAssistantBlob(pending)) {
-      appendAssistant(pending);
-    }
+    if (pending && !shouldHideAssistantBlob(pending)) appendAssistant(pending);
     streamingTextRef.current = '';
     setStreamingText('');
     streamIsJsonRef.current = false;
@@ -502,17 +400,42 @@ export default function ChatScreen() {
       } else {
         client.sendUserMessage(text);
       }
-    } catch (e) {
+    } catch {
       setActivityLine(null);
-      showToast('Something went wrong. Please try again.');
     }
   };
 
+  // Send-pulse animation refs (expanding violet ring + bounce)
+  const sendScale = useSharedValue(1);
+  const ringScale = useSharedValue(0);
+  const ringOpacity = useSharedValue(0);
+
+  const sendButtonStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: sendScale.value }],
+  }));
+  const sendRingStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: ringScale.value }],
+    opacity: ringOpacity.value,
+  }));
+
+  const triggerSendPulse = () => {
+    sendScale.value = withSequence(
+      withTiming(0.9, { duration: 80, easing: RNEasing.out(RNEasing.cubic) }),
+      withTiming(1.08, { duration: 140, easing: RNEasing.out(RNEasing.cubic) }),
+      withTiming(1, { duration: 180, easing: RNEasing.out(RNEasing.cubic) }),
+    );
+    ringScale.value = 0;
+    ringOpacity.value = 0.55;
+    ringScale.value = withTiming(2.4, { duration: 480, easing: RNEasing.out(RNEasing.cubic) });
+    ringOpacity.value = withTiming(0, { duration: 480, easing: RNEasing.out(RNEasing.cubic) });
+  };
+
   const send = () => {
+    if (!input.trim()) return;
+    triggerSendPulse();
     void sendWithText(input);
   };
 
-  // Auto-connect when user lands on Chat tab (good for demos).
   useEffect(() => {
     chatScreenActiveRef.current = true;
     void connect().catch(() => {});
@@ -526,146 +449,111 @@ export default function ChatScreen() {
   useEffect(() => {
     const raw = prefill;
     const text = Array.isArray(raw) ? raw[0] : raw;
-    if (typeof text === 'string' && text.trim()) {
-      setInput(text.trim());
-    }
+    if (typeof text === 'string' && text.trim()) setInput(text.trim());
   }, [prefill]);
 
   useEffect(() => {
-    // Keep the latest message visible
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 50);
   }, [messages, streamingText, activityLine]);
 
-  const showEmptyState =
-    messages.length === 0 && streamingText.length === 0 && activityLine == null;
+  const showEmptyState = messages.length === 0 && streamingText.length === 0 && activityLine == null;
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <WhisperBackground />
       <KeyboardAvoidingView
         style={styles.container}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
       >
-        <View style={[styles.hero, showEmptyState && styles.heroCompact]}>
-          <Text style={[styles.heroTitle, { color: colors.text, ...typography.h1 }]}>Chat with us</Text>
-          <Text style={[styles.heroSubtitle, { color: colors.textSecondary, ...typography.body }]}>
-            Ask what you need—we’ll help you find products.
-          </Text>
-        </View>
-
         <ScrollView
-          ref={(r) => {
-            scrollRef.current = r;
-          }}
+          ref={(r) => { scrollRef.current = r; }}
           style={styles.messages}
-          contentContainerStyle={[styles.messagesContent, showEmptyState && styles.messagesContentGrow]}
+          contentContainerStyle={[
+            styles.messagesContent,
+            { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 160 },
+          ]}
           keyboardShouldPersistTaps="handled"
         >
           {showEmptyState ? (
             <View style={styles.emptyState}>
-              <View style={[styles.emptyIconRing, { borderColor: colors.primary + '44' }]}>
-                <View style={[styles.emptyIconInner, { backgroundColor: colors.primary + '16' }]}>
-                  <Ionicons name="sparkles-outline" size={26} color={colors.primary} />
-                </View>
-              </View>
-              <Text style={[styles.emptyHeading, { color: colors.text }]}>What are you shopping for?</Text>
-              <Text style={[styles.emptyCaption, { color: colors.textSecondary }]}>
-                Tap a starter to send it, or type your own question below.
+              <AuroraOrb size={104} state={orbState} />
+              <Text style={[typography.display, styles.heroTitle, { color: colors.text }]}>
+                Ask. Show. Sign.
               </Text>
-              <View style={styles.starterGrid}>
+              <Text style={[typography.body, styles.heroSubtitle, { color: colors.textSecondary }]}>
+                One AI. Every modality. Tap a starter or use{' '}
+                <Text style={{ color: colors.primary, fontFamily: 'Geist_600SemiBold' }}>voice / camera / sign</Text>{' '}
+                below.
+              </Text>
+
+              <View style={styles.starterList}>
                 {STARTER_IDEAS.map((idea) => (
-                  <TouchableOpacity
+                  <PressableScale
                     key={idea.title}
-                    style={[styles.starterTile, { backgroundColor: colors.surface, borderColor: colors.border }]}
-                    onPress={() => {
-                      void sendWithText(idea.message);
-                    }}
-                    activeOpacity={0.88}
+                    onPress={() => { void sendWithText(idea.message); }}
+                    haptic="light"
                   >
-                    <View style={[styles.starterIconBadge, { backgroundColor: colors.primary + '18' }]}>
-                      <Ionicons name={idea.icon} size={20} color={colors.primary} />
+                    <View style={[styles.starterRow, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                      <IconBadge icon={idea.icon} size="md" variant="subtle" />
+                      <View style={styles.starterTextWrap}>
+                        <Text style={[typography.bodyMd, { color: colors.text }]}>{idea.title}</Text>
+                        <Text style={[typography.caption, { color: colors.textTertiary ?? colors.textSecondary }]} numberOfLines={1}>
+                          {idea.message}
+                        </Text>
+                      </View>
+                      <Ionicons name="arrow-forward" size={16} color={colors.textTertiary ?? colors.textSecondary} />
                     </View>
-                    <View style={styles.starterTileText}>
-                      <Text style={[styles.starterTileTitle, { color: colors.text }]} numberOfLines={2}>
-                        {idea.title}
-                      </Text>
-                      <Text style={[styles.starterTileHint, { color: colors.textSecondary }]} numberOfLines={2}>
-                        {idea.message}
-                      </Text>
-                    </View>
-                    <Ionicons name="arrow-forward" size={16} color={colors.textSecondary} style={styles.starterChevron} />
-                  </TouchableOpacity>
+                  </PressableScale>
                 ))}
               </View>
             </View>
           ) : null}
+
           {messages.map((m) => {
             if (m.kind === 'clarification') {
               return (
                 <View
                   key={m.id}
-                  style={[
-                    styles.clarifyCard,
-                    {
-                      backgroundColor: colors.surface,
-                      borderColor: colors.primary + '40',
-                    },
-                  ]}
+                  style={[styles.clarifyCard, { backgroundColor: colors.surfaceRaised ?? colors.surface, borderColor: colors.borderStrong ?? colors.border }]}
                 >
-                  <View style={[styles.clarifyBadge, { backgroundColor: colors.primary + '22' }]}>
-                    <Ionicons name="help-circle-outline" size={14} color={colors.primary} />
-                    <Text style={[styles.clarifyBadgeText, { color: colors.primary }]}>Quick question</Text>
+                  <View style={[styles.clarifyBadge, { backgroundColor: colors.primaryMuted ?? colors.surface }]}>
+                    <Ionicons name="sparkles" size={12} color={colors.primary} />
+                    <Text style={[typography.label, { color: colors.primary }]}>I need a hint</Text>
                   </View>
-                  <Text style={[styles.clarifyQuestion, { color: colors.text }]}>{m.question}</Text>
+                  <Text style={[typography.h2, { color: colors.text }]}>{m.question}</Text>
                   {m.context ? (
-                    <Text style={[styles.clarifyContext, { color: colors.textSecondary }]}>{m.context}</Text>
+                    <Text style={[typography.body, { color: colors.textSecondary }]}>{m.context}</Text>
                   ) : null}
                   {m.suggestions.length > 0 ? (
                     <View style={styles.chipWrap}>
                       {m.suggestions.map((s, i) => (
-                        <TouchableOpacity
+                        <Chip
                           key={`sg_${i}_${s.slice(0, 24)}`}
-                          style={[
-                            styles.suggestionChip,
-                            {
-                              borderColor: colors.primary,
-                              backgroundColor: colors.primary + '14',
-                            },
-                          ]}
-                          onPress={() => {
-                            void sendWithText(s);
-                          }}
-                          activeOpacity={0.85}
-                        >
-                          <Text style={[styles.suggestionChipText, { color: colors.primary }]} numberOfLines={2}>
-                            {s}
-                          </Text>
-                        </TouchableOpacity>
+                          label={s}
+                          onPress={() => { void sendWithText(s); }}
+                          active
+                        />
                       ))}
                     </View>
                   ) : null}
-                  <Text style={[styles.clarifyHint, { color: colors.textSecondary }]}>
-                    Tap a suggestion to send it, or type your own answer below.
-                  </Text>
                 </View>
               );
             }
 
             if (m.kind === 'results') {
               return (
-                <View
-                  key={m.id}
-                  style={[
-                    styles.resultsContainer,
-                    { backgroundColor: colors.surface, borderColor: colors.border },
-                  ]}
-                >
-                  <Text style={[styles.resultsTitle, { color: colors.text, ...typography.h3 }]}>
-                    {m.summary || 'Results'}
+                <View key={m.id} style={styles.resultsBlock}>
+                  <Text style={[typography.label, { color: colors.textSecondary }]}>
+                    {m.products.length} MATCHES
                   </Text>
-
+                  <Text style={[typography.h2, { color: colors.text, marginTop: 4 }]}>
+                    {m.summary || 'Here you go'}
+                  </Text>
                   {m.products.length === 0 ? (
-                    <Text style={{ color: colors.textSecondary }}>No products returned.</Text>
+                    <Text style={[typography.body, { color: colors.textSecondary, marginTop: 8 }]}>
+                      No matches — try rephrasing.
+                    </Text>
                   ) : (
                     <View style={styles.resultsList}>
                       {m.products.map((p, idx) => {
@@ -674,47 +562,37 @@ export default function ChatScreen() {
                         const title = p.title || 'Untitled product';
                         const price = typeof p.price === 'number' ? p.price : undefined;
                         const currency = p.currency || 'USD';
-                        const rating = typeof p.rating === 'number' ? p.rating : undefined;
-                        const reviews = typeof p.review_count === 'number' ? p.review_count : undefined;
                         const marketplace = p.marketplace || '';
-
                         return (
-                          <View key={key} style={[styles.productCard, { borderColor: colors.border }]}>
-                            <View style={styles.productRow}>
-                              <View style={[styles.productImageWrap, { backgroundColor: colors.background }]}>
+                          <PressableScale
+                            key={key}
+                            onPress={() => openProductLink(p)}
+                            haptic="selection"
+                          >
+                            <View style={[styles.resultCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                              <View style={[styles.resultImageWrap, { backgroundColor: colors.surfaceSunk ?? colors.background }]}>
                                 {image ? (
-                                  <Image source={{ uri: image }} style={styles.productImage} resizeMode="cover" />
+                                  <Image source={{ uri: image }} style={styles.resultImage} resizeMode="cover" />
                                 ) : (
-                                  <View style={styles.productImagePlaceholder}>
-                                    <Ionicons name="image-outline" size={22} color={colors.textSecondary} />
-                                  </View>
+                                  <Ionicons name="image-outline" size={22} color={colors.textSecondary} />
                                 )}
                               </View>
-
-                              <View style={styles.productInfo}>
-                                <Text numberOfLines={2} style={[styles.productTitle, { color: colors.text }]}>
+                              <View style={styles.resultInfo}>
+                                <Text numberOfLines={2} style={[typography.bodyMd, { color: colors.text }]}>
                                   {title}
                                 </Text>
-                                <Text style={{ color: colors.textSecondary }}>
-                                  {marketplace ? `${marketplace} • ` : ''}{price !== undefined ? `${currency} ${price.toFixed(2)}` : `Price N/A`}
+                                <Text style={[typography.caption, { color: colors.textSecondary }]}>
+                                  {marketplace ? marketplace.toUpperCase() : 'WEB'}
                                 </Text>
-                                {rating !== undefined && (
-                                  <Text style={{ color: colors.textSecondary }}>
-                                    ⭐ {rating.toFixed(1)}{reviews !== undefined ? ` (${reviews})` : ''}
+                                {price !== undefined ? (
+                                  <Text style={[typography.priceLg, { color: colors.text, marginTop: 2 }]}>
+                                    {currency === 'USD' ? `$${price.toFixed(2)}` : `${currency} ${price.toFixed(2)}`}
                                   </Text>
-                                )}
+                                ) : null}
                               </View>
+                              <Ionicons name="open-outline" size={16} color={colors.textSecondary} />
                             </View>
-
-                            <TouchableOpacity
-                              style={[styles.openButton, { backgroundColor: colors.primary }]}
-                              onPress={() => openProductLink(p)}
-                              activeOpacity={0.85}
-                            >
-                              <Ionicons name="open-outline" size={16} color="#fff" />
-                              <Text style={styles.openButtonText}>Open</Text>
-                            </TouchableOpacity>
-                          </View>
+                          </PressableScale>
                         );
                       })}
                     </View>
@@ -723,260 +601,247 @@ export default function ChatScreen() {
               );
             }
 
-            if (m.kind === 'text' && m.role === 'assistant' && shouldHideAssistantBlob(m.text)) {
-              return null;
+            if (m.kind === 'text' && m.role === 'assistant' && shouldHideAssistantBlob(m.text)) return null;
+
+            const isUser = m.role === 'user';
+            const isSystem = m.role === 'system';
+
+            if (isSystem) {
+              return (
+                <View key={m.id} style={styles.systemBubble}>
+                  <Text style={[typography.caption, { color: colors.textTertiary ?? colors.textSecondary, textAlign: 'center' }]}>
+                    {m.text}
+                  </Text>
+                </View>
+              );
+            }
+
+            if (isUser) {
+              return (
+                <View key={m.id} style={[styles.bubbleRow, { justifyContent: 'flex-end' }]}>
+                  <LinearGradient
+                    colors={[...AURORA_COLORS]}
+                    locations={[...AURORA_LOCATIONS]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={[styles.userBubble]}
+                  >
+                    <Text style={[typography.body, { color: '#fff' }]}>{m.text}</Text>
+                  </LinearGradient>
+                </View>
+              );
             }
 
             return (
-              <View
-                key={m.id}
-                style={[
-                  styles.bubble,
-                  m.role === 'user'
-                    ? styles.userBubble
-                    : m.role === 'assistant'
-                      ? styles.assistantBubble
-                      : styles.systemBubble,
-                  {
-                    backgroundColor:
-                      m.role === 'user' ? colors.primary : m.role === 'assistant' ? colors.surface : colors.background,
-                    borderColor: colors.border,
-                  },
-                ]}
-              >
-                <Text
-                  style={{
-                    color: m.role === 'user' ? '#fff' : colors.text,
-                    ...(m.role === 'assistant'
-                      ? { fontSize: 16, lineHeight: 22 }
-                      : m.role === 'system'
-                        ? { fontSize: 12, lineHeight: 16 }
-                        : {}),
-                  }}
+              <View key={m.id} style={[styles.bubbleRow, { justifyContent: 'flex-start' }]}>
+                <View
+                  style={[
+                    styles.assistantBubble,
+                    { backgroundColor: colors.surfaceRaised ?? colors.surface, borderColor: colors.border },
+                  ]}
                 >
-                  {m.text}
-                </Text>
+                  <View style={styles.assistantStripe} />
+                  <Text style={[typography.body, { color: colors.text, flex: 1, paddingLeft: 10 }]}>
+                    {m.text}
+                  </Text>
+                </View>
               </View>
             );
           })}
+
           {activityLine ? (
-            <View
-              style={[
-                styles.activityInline,
-                {
-                  backgroundColor: colors.surface,
-                  borderColor: colors.border,
-                },
-              ]}
-            >
-              <ActivityIndicator size="small" color={colors.primary} />
-              <Text style={[styles.activityText, { color: colors.textSecondary }]} numberOfLines={2}>
+            <View style={[styles.activityChip, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              {/* Mini orb instead of plain ActivityIndicator — keeps the brand alive during streaming */}
+              <AuroraOrb size={20} state="thinking" glow={false} />
+              <Text style={[typography.caption, { color: colors.textSecondary, flex: 1 }]} numberOfLines={2}>
                 {activityLine}
               </Text>
             </View>
           ) : null}
-          {streamingText.length > 0 && !shouldHideAssistantBlob(streamingText) && (
-            <View
-              style={[
-                styles.bubble,
-                styles.assistantBubble,
-                { backgroundColor: colors.surface, borderColor: colors.border },
-              ]}
-            >
-              <Text style={{ color: colors.text, fontSize: 16, lineHeight: 22 }}>{streamingText}</Text>
+
+          {streamingText.length > 0 && !shouldHideAssistantBlob(streamingText) ? (
+            <View style={[styles.bubbleRow, { justifyContent: 'flex-start' }]}>
+              <View style={[styles.assistantBubble, { backgroundColor: colors.surfaceRaised ?? colors.surface, borderColor: colors.border }]}>
+                <View style={styles.assistantStripe} />
+                <Text style={[typography.body, { color: colors.text, flex: 1, paddingLeft: 10 }]}>
+                  {streamingText}
+                  <Text style={{ color: colors.primary }}> ▍</Text>
+                </Text>
+              </View>
             </View>
-          )}
+          ) : null}
         </ScrollView>
 
-        <View style={[styles.inputRow, { borderTopColor: colors.border, backgroundColor: colors.background }]}>
-          <TextInput
-            value={input}
-            onChangeText={setInput}
-            placeholder={needsClarification ? 'Answer the question…' : 'Message…'}
-            placeholderTextColor={colors.textSecondary}
-            style={[styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border }]}
-            multiline={false}
-            returnKeyType="send"
-            blurOnSubmit={false}
-            onSubmitEditing={send}
-          />
-          <TouchableOpacity
-            onPress={send}
-            style={[styles.sendButton, { backgroundColor: colors.primary }]}
-            disabled={!input.trim()}
-          >
-            <Ionicons name="send" size={16} color="#fff" />
-          </TouchableOpacity>
-        </View>
+        {/* Gradient fade-mask so scroll content doesn't crash into the compose pill */}
+        <LinearGradient
+          colors={['rgba(10, 10, 15, 0)', 'rgba(10, 10, 15, 0.92)', 'rgba(10, 10, 15, 1)']}
+          locations={[0, 0.55, 1]}
+          start={{ x: 0.5, y: 0 }}
+          end={{ x: 0.5, y: 1 }}
+          pointerEvents="none"
+          style={[
+            styles.composeFadeMask,
+            { bottom: insets.bottom + 92, height: 80 },
+          ]}
+        />
 
-        {toast ? (
+        {/* Compose pill — sits above the floating tab bar */}
+        <View
+          style={[
+            styles.composeWrap,
+            { bottom: insets.bottom + 96 },
+          ]}
+        >
           <View
-            pointerEvents="none"
             style={[
-              styles.toast,
+              styles.compose,
               {
-                backgroundColor: colors.surface,
-                borderColor: colors.border,
-                bottom: Math.max(insets.bottom, 8) + 78,
+                backgroundColor: colors.surfaceRaised ?? colors.surface,
+                borderColor: colors.borderStrong ?? colors.border,
               },
             ]}
           >
-            <Text style={[styles.toastText, { color: colors.text }]}>{toast}</Text>
+            <PressableScale onPress={() => router.push('/(tabs)/asl')} haptic="selection">
+              <View style={[styles.composeIconBtn, { backgroundColor: colors.surface }]}>
+                <Ionicons name="hand-left-outline" size={18} color={colors.primary} />
+              </View>
+            </PressableScale>
+
+            <TextInput
+              value={input}
+              onChangeText={setInput}
+              placeholder={needsClarification ? 'Answer the question…' : 'Type, sign, or speak…'}
+              placeholderTextColor={colors.textTertiary ?? colors.textSecondary}
+              style={[styles.composeInput, { color: colors.text }]}
+              multiline
+              returnKeyType="send"
+              blurOnSubmit={false}
+              onSubmitEditing={send}
+            />
+
+            <PressableScale
+              onPress={send}
+              disabled={!input.trim()}
+              haptic="medium"
+              pressedScale={0.92}
+            >
+              <View style={styles.sendBtnHost}>
+                {/* Expanding violet ring on send (fires from triggerSendPulse) */}
+                <Animated.View
+                  pointerEvents="none"
+                  style={[
+                    styles.sendRing,
+                    { borderColor: colors.primary },
+                    sendRingStyle,
+                  ]}
+                />
+                {/* Send button — gradient when input has text, sunk-surface when disabled */}
+                <Animated.View style={sendButtonStyle}>
+                  {input.trim() ? (
+                    <LinearGradient
+                      colors={[...AURORA_COLORS]}
+                      locations={[...AURORA_LOCATIONS]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={styles.sendBtn}
+                    >
+                      <Ionicons name="arrow-up" size={18} color="#fff" />
+                    </LinearGradient>
+                  ) : (
+                    <View
+                      style={[
+                        styles.sendBtn,
+                        { backgroundColor: colors.surfaceSunk ?? colors.surface },
+                      ]}
+                    >
+                      <Ionicons
+                        name="arrow-up"
+                        size={18}
+                        color={colors.textTertiary ?? colors.textSecondary}
+                      />
+                    </View>
+                  )}
+                </Animated.View>
+              </View>
+            </PressableScale>
           </View>
-        ) : null}
+        </View>
       </KeyboardAvoidingView>
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  toast: {
-    position: 'absolute',
-    left: 16,
-    right: 16,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    zIndex: 50,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 6,
-    elevation: 4,
-  },
-  toastText: {
-    fontSize: 14,
-    fontWeight: '600',
-    textAlign: 'center',
-  },
-  hero: {
-    paddingVertical: 20,
-    paddingHorizontal: 16,
+  container: { flex: 1 },
+  messages: { flex: 1, paddingHorizontal: 18 },
+  messagesContent: { gap: 12 },
+
+  emptyState: {
     alignItems: 'center',
-    marginBottom: 4,
+    gap: 16,
+    paddingVertical: 12,
   },
-  heroTitle: {
-    textAlign: 'center',
-    marginBottom: 8,
-  },
+  heroTitle: { textAlign: 'center', marginTop: 8 },
   heroSubtitle: {
     textAlign: 'center',
-    opacity: 0.85,
-    paddingHorizontal: 12,
-  },
-  heroCompact: {
-    paddingVertical: 14,
-    marginBottom: 0,
-  },
-  messagesContentGrow: {
-    flexGrow: 1,
-  },
-  emptyState: {
-    paddingBottom: 24,
-    gap: 8,
-    alignItems: 'center',
-  },
-  emptyIconRing: {
-    padding: 3,
-    borderRadius: 999,
-    borderWidth: 1,
-    marginBottom: 4,
-  },
-  emptyIconInner: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  emptyHeading: {
-    fontSize: 18,
-    fontWeight: '700',
-    textAlign: 'center',
-    marginTop: 4,
-  },
-  emptyCaption: {
-    fontSize: 14,
-    lineHeight: 20,
-    textAlign: 'center',
     paddingHorizontal: 8,
-    marginBottom: 8,
-    opacity: 0.92,
+    marginTop: -8,
   },
-  starterGrid: {
+  starterList: {
     alignSelf: 'stretch',
     gap: 10,
-    marginTop: 4,
+    marginTop: 14,
   },
-  starterTile: {
+  starterRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: 14,
-    borderWidth: 1,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
     gap: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    borderWidth: StyleSheet.hairlineWidth,
   },
-  starterIconBadge: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  starterTileText: {
-    flex: 1,
-    gap: 2,
-    minWidth: 0,
-  },
-  starterTileTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  starterTileHint: {
-    fontSize: 12,
-    lineHeight: 16,
-  },
-  starterChevron: {
-    opacity: 0.65,
-  },
-  activityInline: {
-    alignSelf: 'flex-start',
-    maxWidth: '92%',
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-    gap: 10,
-  },
-  activityText: {
-    flex: 1,
-    flexShrink: 1,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '600',
-  },
-  messages: {
-    flex: 1,
+  starterTextWrap: { flex: 1, gap: 2 },
+
+  bubbleRow: { flexDirection: 'row', width: '100%' },
+  userBubble: {
+    minWidth: 60,
+    maxWidth: '85%',
     paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+    borderBottomRightRadius: 6,
+    shadowColor: '#7C5CFF',
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
   },
-  messagesContent: {
-    paddingVertical: 12,
-    gap: 12,
+  assistantBubble: {
+    maxWidth: '88%',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 20,
+    borderBottomLeftRadius: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    overflow: 'hidden',
   },
+  assistantStripe: {
+    width: 3,
+    backgroundColor: '#7C5CFF',
+    borderRadius: 2,
+    marginRight: 6,
+  },
+  systemBubble: {
+    alignSelf: 'center',
+    paddingVertical: 4,
+  },
+
   clarifyCard: {
-    alignSelf: 'stretch',
-    marginHorizontal: 0,
-    borderRadius: 16,
-    borderWidth: 1,
-    padding: 14,
-    gap: 10,
+    borderRadius: 24,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: 16,
+    gap: 12,
   },
   clarifyBadge: {
     alignSelf: 'flex-start',
@@ -985,142 +850,103 @@ const styles = StyleSheet.create({
     gap: 6,
     paddingHorizontal: 10,
     paddingVertical: 4,
-    borderRadius: 20,
+    borderRadius: 999,
   },
-  clarifyBadgeText: {
-    fontSize: 12,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  clarifyQuestion: {
-    fontSize: 17,
-    fontWeight: '600',
-    lineHeight: 24,
-  },
-  clarifyContext: {
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  chipWrap: {
+  chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+
+  resultsBlock: { gap: 8 },
+  resultsList: { gap: 10, marginTop: 4 },
+  resultCard: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  suggestionChip: {
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    maxWidth: '100%',
-  },
-  suggestionChipText: {
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  clarifyHint: {
-    fontSize: 12,
-    marginTop: 4,
-  },
-  bubble: {
-    borderRadius: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderWidth: 1,
-    maxWidth: '92%',
-  },
-  userBubble: {
-    alignSelf: 'flex-end',
-  },
-  assistantBubble: {
-    alignSelf: 'flex-start',
-  },
-  systemBubble: {
-    alignSelf: 'center',
-  },
-  inputRow: {
-    borderTopWidth: 1,
+    alignItems: 'center',
+    gap: 12,
     padding: 12,
+    borderRadius: 20,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  resultImageWrap: {
+    width: 64,
+    height: 64,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  resultImage: { width: 64, height: 64 },
+  resultInfo: { flex: 1, gap: 2 },
+
+  activityChip: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    maxWidth: '88%',
+  },
+
+  composeWrap: {
+    position: 'absolute',
+    left: 14,
+    right: 14,
+  },
+  compose: {
     flexDirection: 'row',
     alignItems: 'flex-end',
-    gap: 10,
-  },
-  input: {
-    flex: 1,
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    minHeight: 44,
-    maxHeight: 120,
-  },
-  sendButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  resultsContainer: {
-    borderRadius: 14,
-    borderWidth: 1,
-    padding: 12,
-    gap: 10,
-  },
-  resultsTitle: {
-    fontWeight: '700',
-  },
-  resultsList: {
-    gap: 12,
-  },
-  productCard: {
-    borderWidth: 1,
-    borderRadius: 12,
-    padding: 10,
-    gap: 10,
-  },
-  productRow: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  productImageWrap: {
-    width: 64,
-    height: 64,
-    borderRadius: 10,
-    overflow: 'hidden',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  productImage: {
-    width: 64,
-    height: 64,
-  },
-  productImagePlaceholder: {
-    width: 64,
-    height: 64,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  productInfo: {
-    flex: 1,
-    gap: 4,
-  },
-  productTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  openButton: {
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 10,
+    gap: 8,
+    paddingHorizontal: 8,
     paddingVertical: 8,
-    borderRadius: 10,
+    borderRadius: 28,
+    borderWidth: StyleSheet.hairlineWidth,
+    shadowColor: '#000',
+    shadowOpacity: 0.45,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
   },
-  openButtonText: {
-    color: '#fff',
-    fontWeight: '700',
-    fontSize: 13,
+  composeIconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  composeInput: {
+    flex: 1,
+    fontFamily: 'Geist_400Regular',
+    fontSize: 15,
+    lineHeight: 22,
+    minHeight: 40,
+    maxHeight: 96,
+    paddingHorizontal: 8,
+    paddingVertical: 10,
+  },
+  sendBtnHost: {
+    width: 38,
+    height: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sendBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sendRing: {
+    position: 'absolute',
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 1.5,
+  },
+
+  composeFadeMask: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
   },
 });

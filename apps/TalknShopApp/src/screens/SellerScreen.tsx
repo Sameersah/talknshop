@@ -1,30 +1,40 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
-  TouchableOpacity,
   TextInput,
   Image,
   Alert,
-  ActivityIndicator,
+  Linking,
   Modal,
   Animated,
+  Easing,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
-import { useTheme } from '@/hooks/useTheme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-// Marketplace integration imports - disabled for now
-// import * as WebBrowser from 'expo-web-browser';
-// import * as Linking from 'expo-linking';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useTheme } from '@/hooks/useTheme';
 import { Product } from '@/data/products';
 import { addSellerProduct } from '@/data/sellerProducts';
-import { sellerService } from '@/services/sellerService';
-import { MarketplacePlatform, MarketplaceConnection } from '@/services/marketplaceService';
+import { ebayListingService, EbayListingResult } from '@/services/ebayListingService';
+import {
+  AuroraOrb,
+  Chip,
+  GradientBorder,
+  GradientButton,
+  IconBadge,
+  PressableScale,
+  SectionHeader,
+  WhisperBackground,
+} from '@/components/ui';
+import { AURORA_COLORS, AURORA_LOCATIONS } from '@/constants/theme';
 
-interface SellerProduct extends Omit<Product, 'id' | 'rating' | 'reviewCount' | 'source'> {
+interface SellerFormData extends Omit<Product, 'id' | 'rating' | 'reviewCount' | 'source'> {
   id?: string;
   sellerId?: string;
   condition?: 'new' | 'like-new' | 'good' | 'fair';
@@ -32,41 +42,37 @@ interface SellerProduct extends Omit<Product, 'id' | 'rating' | 'reviewCount' | 
 }
 
 const PRODUCT_CATEGORIES = [
-  { id: 'electronics', name: 'Electronics', icon: 'phone-portrait' },
-  { id: 'fashion', name: 'Fashion', icon: 'shirt' },
-  { id: 'home-kitchen', name: 'Home & Kitchen', icon: 'home' },
-  { id: 'sports', name: 'Sports & Outdoors', icon: 'football' },
-  { id: 'books', name: 'Books & Media', icon: 'book' },
-  { id: 'toys', name: 'Toys & Games', icon: 'game-controller' },
-  { id: 'beauty', name: 'Beauty & Personal Care', icon: 'sparkles' },
-  { id: 'automotive', name: 'Automotive', icon: 'car' },
-];
+  { id: 'electronics', name: 'Electronics', icon: 'phone-portrait-outline' },
+  { id: 'fashion', name: 'Fashion', icon: 'shirt-outline' },
+  { id: 'home-kitchen', name: 'Home', icon: 'home-outline' },
+  { id: 'sports', name: 'Sports', icon: 'football-outline' },
+  { id: 'books', name: 'Books', icon: 'book-outline' },
+  { id: 'toys', name: 'Toys', icon: 'game-controller-outline' },
+  { id: 'beauty', name: 'Beauty', icon: 'sparkles-outline' },
+  { id: 'automotive', name: 'Auto', icon: 'car-outline' },
+] as const;
 
-const PRODUCT_CONDITIONS = [
-  { id: 'new', name: 'New', description: 'Brand new, never used' },
-  { id: 'like-new', name: 'Like New', description: 'Used but looks new' },
-  { id: 'good', name: 'Good', description: 'Used, minor wear' },
-  { id: 'fair', name: 'Fair', description: 'Used, visible wear' },
-];
-
-const MARKETPLACE_PLATFORMS = [
-  { id: 'ebay' as MarketplacePlatform, name: 'eBay', icon: 'storefront', color: '#0064D2', comingSoon: false },
-  { id: 'facebook' as MarketplacePlatform, name: 'Facebook', icon: 'logo-facebook', color: '#1877F2', comingSoon: true },
-];
+const CONDITIONS = [
+  { id: 'new', name: 'New', hint: 'Sealed' },
+  { id: 'like-new', name: 'Like new', hint: 'Barely used' },
+  { id: 'good', name: 'Good', hint: 'Minor wear' },
+  { id: 'fair', name: 'Fair', hint: 'Visible wear' },
+] as const;
 
 export const SellerScreen: React.FC = () => {
   const { colors, typography } = useTheme();
   const insets = useSafeAreaInsets();
+
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [productImages, setProductImages] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [selectedMarketplaces, setSelectedMarketplaces] = useState<MarketplacePlatform[]>([]);
-  const [marketplaceConnections, setMarketplaceConnections] = useState<MarketplaceConnection[]>([]);
-  const [isProductDetailsExpanded, setIsProductDetailsExpanded] = useState(false);
-  const [showVerificationModal, setShowVerificationModal] = useState(false);
-  const fadeAnim = useRef(new Animated.Value(0)).current;
-  const scaleAnim = useRef(new Animated.Value(0.8)).current;
-  const [formData, setFormData] = useState<Partial<SellerProduct>>({
+  const [postToEbay, setPostToEbay] = useState(true);
+  const [showModal, setShowModal] = useState(false);
+  const [modalState, setModalState] = useState<'working' | 'success' | 'fail'>('working');
+  const [lastListingUrl, setLastListingUrl] = useState<string | null>(null);
+  const [lastError, setLastError] = useState<string | null>(null);
+
+  const [formData, setFormData] = useState<Partial<SellerFormData>>({
     name: '',
     description: '',
     price: 0,
@@ -77,213 +83,57 @@ export const SellerScreen: React.FC = () => {
     fastDelivery: false,
   });
 
-  // Marketplace connections - eBay appears connected for UI purposes only
-  // Actual posting is disabled behind the scenes
-  useEffect(() => {
-    // Set eBay as connected for UI purposes (but won't actually post)
-    setMarketplaceConnections([
-      { platform: 'ebay' as MarketplacePlatform, connected: true },
-      { platform: 'facebook' as MarketplacePlatform, connected: false },
-    ]);
-  }, []);
+  const fade = useRef(new Animated.Value(0)).current;
+  const scaleAnim = useRef(new Animated.Value(0.92)).current;
 
-  const handleCategorySelect = (categoryId: string) => {
-    setSelectedCategory(categoryId);
-    setFormData((prev) => ({ ...prev, category: categoryId }));
-  };
+  useEffect(() => {
+    if (showModal) {
+      Animated.parallel([
+        Animated.timing(fade, { toValue: 1, duration: 220, useNativeDriver: true, easing: Easing.out(Easing.cubic) }),
+        Animated.timing(scaleAnim, { toValue: 1, duration: 280, useNativeDriver: true, easing: Easing.out(Easing.cubic) }),
+      ]).start();
+    } else {
+      fade.setValue(0);
+      scaleAnim.setValue(0.92);
+    }
+  }, [showModal, fade, scaleAnim]);
 
   const handleTakePhoto = async () => {
-    try {
-      const { status } = await ImagePicker.requestCameraPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission Required', 'Please grant camera permissions to take photos.');
-        return;
-      }
-
-      const result = await ImagePicker.launchCameraAsync({
-        allowsEditing: true,
-        aspect: [4, 3],
-        quality: 0.8,
-      });
-
-      if (!result.canceled && result.assets[0]) {
-        setProductImages((prev) => [...prev, result.assets[0].uri]);
-      }
-    } catch (error) {
-      console.error('Camera error:', error);
-      Alert.alert('Error', 'Failed to take photo');
-    }
-  };
-
-  const handlePickImage = async () => {
-    try {
-      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission Required', 'Please grant photo library permissions.');
-        return;
-      }
-
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
-        aspect: [4, 3],
-        quality: 0.8,
-        allowsMultipleSelection: true,
-      });
-
-      if (!result.canceled && result.assets) {
-        const newImages = result.assets.map((asset) => asset.uri);
-        setProductImages((prev) => [...prev, ...newImages]);
-      }
-    } catch (error) {
-      console.error('Image picker error:', error);
-      Alert.alert('Error', 'Failed to pick images');
-    }
-  };
-
-  const handleRemoveImage = (index: number) => {
-    setProductImages((prev) => prev.filter((_, i) => i !== index));
-  };
-
-  // Marketplace connection functions - disabled for now
-  // Will be re-enabled when eBay integration is ready
-  // const handleConnectMarketplace = async (platform: MarketplacePlatform) => { ... }
-  // const handleToggleMarketplace = (platform: MarketplacePlatform) => { ... }
-
-  const handleSubmit = async () => {
-    // Minimal validation - only category and image required
-    if (!selectedCategory) {
-      Alert.alert('Category Required', 'Please select a product category.');
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Camera needed', 'Allow camera access to take a photo.');
       return;
     }
+    const result = await ImagePicker.launchCameraAsync({
+      allowsEditing: true,
+      aspect: [4, 3],
+      quality: 0.8,
+    });
+    if (!result.canceled && result.assets[0]) {
+      setProductImages((prev) => [...prev, result.assets[0].uri]);
+    }
+  };
 
-    if (productImages.length === 0) {
-      Alert.alert('Photo Required', 'Please add at least one product photo.');
+  const handlePickPhoto = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Photo access needed', 'Allow access to your photos.');
       return;
     }
-
-    console.log('=== Starting listing submission ===');
-    setIsSubmitting(true);
-    
-    // Show verification modal with animation
-    setShowVerificationModal(true);
-    Animated.parallel([
-      Animated.timing(fadeAnim, {
-        toValue: 1,
-        duration: 300,
-        useNativeDriver: true,
-      }),
-      Animated.spring(scaleAnim, {
-        toValue: 1,
-        friction: 8,
-        tension: 40,
-        useNativeDriver: true,
-      }),
-    ]).start();
-
-    try {
-      // Auto-generate missing fields
-      const productName = formData.name || `${PRODUCT_CATEGORIES.find(c => c.id === selectedCategory)?.name} Item`;
-      const productDescription = formData.description || `Quality ${productName.toLowerCase()} for sale`;
-      const productPrice = formData.price || 0;
-
-      // Try to create listing on backend (but don't fail if service is down)
-      try {
-        await sellerService.createListing({
-          category: selectedCategory,
-          name: productName,
-          description: productDescription,
-          price: productPrice,
-          brand: formData.brand || 'Unbranded',
-          quantity: formData.quantity || 1,
-          condition: formData.condition || 'new',
-          images: productImages,
-          inStock: formData.inStock ?? true,
-          fastDelivery: formData.fastDelivery ?? false,
-        });
-        console.log('Listing created on backend');
-      } catch (backendError: any) {
-        console.warn('Backend listing creation failed (continuing with local save):', backendError);
-        // Continue with local save even if backend fails
-      }
-
-      // Save locally for offline access
-      addSellerProduct({
-        name: productName,
-        description: productDescription,
-        price: productPrice,
-        brand: formData.brand || 'Unbranded',
-        category: selectedCategory,
-        image: productImages[0],
-        sellerId: 'current-user',
-        sellerName: 'You',
-        condition: formData.condition || 'new',
-        quantity: formData.quantity || 1,
-        inStock: formData.inStock ?? true,
-        fastDelivery: formData.fastDelivery ?? false,
-      });
-
-      // Wait 2 seconds to show the verification message
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      // Hide modal and show success
-      Animated.parallel([
-        Animated.timing(fadeAnim, {
-          toValue: 0,
-          duration: 200,
-          useNativeDriver: true,
-        }),
-        Animated.timing(scaleAnim, {
-          toValue: 0.8,
-          duration: 200,
-          useNativeDriver: true,
-        }),
-      ]).start(() => {
-        setShowVerificationModal(false);
-        
-        const successMessage = selectedMarketplaces.includes('ebay')
-          ? 'Your product has been submitted for verification and will be posted to eBay soon!'
-          : 'Your product has been submitted for verification and will be listed soon!';
-        Alert.alert('Listed! 🎉', successMessage, [
-          {
-            text: 'List Another',
-            onPress: () => {
-              resetForm();
-            },
-          },
-          {
-            text: 'Done',
-            onPress: () => {
-              resetForm();
-              setSelectedCategory(null);
-            },
-          },
-        ]);
-      });
-    } catch (error: any) {
-      console.error('=== Submission error ===', error);
-      const errorMessage = error?.message || error?.toString() || 'Failed to list product. Please try again.';
-      
-      // Hide modal on error
-      Animated.parallel([
-        Animated.timing(fadeAnim, {
-          toValue: 0,
-          duration: 200,
-          useNativeDriver: true,
-        }),
-        Animated.timing(scaleAnim, {
-          toValue: 0.8,
-          duration: 200,
-          useNativeDriver: true,
-        }),
-      ]).start(() => {
-        setShowVerificationModal(false);
-        Alert.alert('Error', errorMessage, [{ text: 'OK' }]);
-      });
-    } finally {
-      console.log('=== Submission finished ===');
-      setIsSubmitting(false);
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [4, 3],
+      quality: 0.8,
+      allowsMultipleSelection: true,
+    });
+    if (!result.canceled && result.assets) {
+      setProductImages((prev) => [...prev, ...result.assets.map((a) => a.uri)]);
     }
+  };
+
+  const handleRemoveImage = (idx: number) => {
+    setProductImages((prev) => prev.filter((_, i) => i !== idx));
   };
 
   const resetForm = () => {
@@ -298,792 +148,670 @@ export const SellerScreen: React.FC = () => {
       inStock: true,
       fastDelivery: false,
     });
-    setSelectedMarketplaces([]);
   };
 
+  const handleSubmit = async () => {
+    if (!selectedCategory) {
+      Alert.alert('Pick a category', 'Choose what you’re selling first.');
+      return;
+    }
+    if (productImages.length === 0) {
+      Alert.alert('Add a photo', 'At least one photo is required.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    setModalState('working');
+    setLastListingUrl(null);
+    setLastError(null);
+    setShowModal(true);
+
+    const productName =
+      formData.name || `${PRODUCT_CATEGORIES.find((c) => c.id === selectedCategory)?.name ?? 'Item'} for sale`;
+    const productDescription =
+      formData.description || `Quality ${productName.toLowerCase()} from a verified seller.`;
+    const productPrice = formData.price && formData.price > 0 ? formData.price : 9.99;
+    const productBrand = formData.brand || 'Unbranded';
+    const productCondition = formData.condition || 'good';
+
+    let ebayResult: EbayListingResult | null = null;
+
+    if (postToEbay) {
+      try {
+        ebayResult = await ebayListingService.createListing({
+          title: productName,
+          description: productDescription,
+          price: productPrice,
+          condition: productCondition as any,
+          category: PRODUCT_CATEGORIES.find((c) => c.id === selectedCategory)?.name ?? selectedCategory,
+          brand: productBrand,
+          quantity: formData.quantity || 1,
+          localImageUri: productImages[0],
+        });
+      } catch (e: any) {
+        ebayResult = { success: false, error: e?.message || 'Unknown error' };
+      }
+    }
+
+    try {
+      await addSellerProduct({
+        name: productName,
+        description: productDescription,
+        price: productPrice,
+        brand: productBrand,
+        category: selectedCategory,
+        image: productImages[0],
+        sellerId: 'current-user',
+        sellerName: 'You',
+        condition: productCondition as any,
+        quantity: formData.quantity || 1,
+        inStock: formData.inStock ?? true,
+        fastDelivery: formData.fastDelivery ?? false,
+        ebayListingId: ebayResult?.listingId,
+        ebayListingUrl: ebayResult?.listingUrl,
+      });
+    } catch (e: any) {
+      // Local save failed — surface but treat as soft error if eBay succeeded
+      console.warn('Local save failed', e);
+    }
+
+    if (postToEbay && ebayResult?.success && ebayResult.listingUrl) {
+      setLastListingUrl(ebayResult.listingUrl);
+      setModalState('success');
+    } else if (postToEbay && ebayResult && !ebayResult.success) {
+      setLastError(ebayResult.error || 'Unknown error');
+      setModalState('fail');
+    } else {
+      // Not posting to eBay — just local save succeeded
+      setModalState('success');
+    }
+
+    setIsSubmitting(false);
+  };
+
+  const closeModalAndReset = () => {
+    setShowModal(false);
+    setTimeout(() => {
+      resetForm();
+      setSelectedCategory(null);
+    }, 220);
+  };
+
+  const formValid = selectedCategory != null && productImages.length > 0;
+
   return (
-    <View style={styles.container}>
-    <ScrollView
-      style={[styles.container, { backgroundColor: colors.background }]}
-      contentContainerStyle={[
-        styles.contentContainer,
-        { paddingTop: insets.top + 32, paddingBottom: insets.bottom + 40 },
-      ]}
-      showsVerticalScrollIndicator={false}
-    >
-      <View style={styles.header}>
-        <Text style={[styles.sellerTitle, { color: colors.text, ...typography.h1 }]}>Sell Your Product</Text>
-        <Text style={[styles.sellerSubtitle, { color: colors.textSecondary, ...typography.body }]}>
-          Just select category & add photo. That's it! 🚀
-        </Text>
-      </View>
-
-      {/* Category Selection */}
-      <View style={styles.section}>
-        <Text style={[styles.sectionTitle, { color: colors.text, ...typography.h3 }]}>
-          Select Category
-        </Text>
-        <Text style={[styles.sectionSubtitle, { color: colors.textSecondary }]}>
-          Choose what you're selling
-        </Text>
-        <View style={styles.categoryGrid}>
-          {PRODUCT_CATEGORIES.map((category) => (
-            <TouchableOpacity
-              key={category.id}
-              style={[
-                styles.categoryCard,
-                {
-                  backgroundColor:
-                    selectedCategory === category.id ? colors.primary + '20' : colors.surface,
-                  borderColor:
-                    selectedCategory === category.id ? colors.primary : colors.border,
-                },
-              ]}
-              onPress={() => handleCategorySelect(category.id)}
-              activeOpacity={0.7}
-            >
-              <Ionicons
-                name={category.icon as any}
-                size={32}
-                color={selectedCategory === category.id ? colors.primary : colors.textSecondary}
-              />
-              <Text
-                style={[
-                  styles.categoryText,
-                  {
-                    color: selectedCategory === category.id ? colors.primary : colors.text,
-                    fontWeight: selectedCategory === category.id ? '600' : '500',
-                  },
-                ]}
-              >
-                {category.name}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-      </View>
-
-      {/* Product Images */}
-      <View style={styles.section}>
-        <Text style={[styles.sectionTitle, { color: colors.text, ...typography.h3 }]}>
-          Add Photo
-        </Text>
-        <Text style={[styles.sectionSubtitle, { color: colors.textSecondary }]}>
-          Take a photo or choose from gallery
-        </Text>
-
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.imageScroll}>
-          {productImages.map((uri, index) => (
-            <View key={index} style={styles.imageContainer}>
-              <Image source={{ uri }} style={styles.productImage} />
-              <TouchableOpacity
-                style={[styles.removeImageButton, { backgroundColor: colors.error }]}
-                onPress={() => handleRemoveImage(index)}
-              >
-                <Ionicons name="close" size={16} color="#FFFFFF" />
-              </TouchableOpacity>
-            </View>
-          ))}
-
-          {productImages.length < 5 && (
-            <>
-              <TouchableOpacity
-                style={[styles.addImageButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
-                onPress={handleTakePhoto}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="camera" size={32} color={colors.primary} />
-                <Text style={[styles.addImageText, { color: colors.text }]}>Take Photo</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.addImageButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
-                onPress={handlePickImage}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="images" size={32} color={colors.primary} />
-                <Text style={[styles.addImageText, { color: colors.text }]}>Choose from Gallery</Text>
-              </TouchableOpacity>
-            </>
-          )}
-        </ScrollView>
-      </View>
-
-      {/* Product Details Form - Collapsible Dropdown */}
-      {selectedCategory && (
-        <View style={styles.section}>
-          <TouchableOpacity
-            style={styles.collapsibleHeader}
-            onPress={() => setIsProductDetailsExpanded(!isProductDetailsExpanded)}
-            activeOpacity={0.7}
-          >
-            <View style={styles.collapsibleHeaderContent}>
-              <Text style={[styles.sectionTitle, { color: colors.text, ...typography.h3 }]}>
-                Product Details (Optional)
-              </Text>
-              <Ionicons
-                name={isProductDetailsExpanded ? 'chevron-up' : 'chevron-down'}
-                size={24}
-                color={colors.textSecondary}
-              />
-            </View>
-            <Text style={[styles.sectionSubtitle, { color: colors.textSecondary }]}>
-              {isProductDetailsExpanded ? 'Tap to collapse' : 'Tap to add more details'}
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <WhisperBackground color="#FF7A59" height={360} />
+      <KeyboardAvoidingView
+        style={styles.container}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <ScrollView
+          style={styles.flex}
+          contentContainerStyle={[
+            styles.content,
+            { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 200 },
+          ]}
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Hero */}
+          <View style={styles.hero}>
+            <Text style={[typography.label, { color: colors.accent ?? colors.primary }]}>SELL IN 10 SECONDS</Text>
+            <Text style={[typography.display, { color: colors.text, marginTop: 6 }]} numberOfLines={2}>
+              Snap it.{"\n"}
+              <Text style={{ color: colors.accent ?? colors.primary }}>List it.</Text>
             </Text>
-          </TouchableOpacity>
+            <Text style={[typography.body, { color: colors.textSecondary, marginTop: 4 }]}>
+              One photo, one tap — your item is live on eBay.
+            </Text>
+          </View>
 
-          {isProductDetailsExpanded && (
-            <View style={styles.collapsibleContent}>
-              <View style={styles.formGroup}>
-                <Text style={[styles.label, { color: colors.text }]}>Product Name</Text>
-                <TextInput
-                  style={[styles.input, { backgroundColor: colors.surface, color: colors.text, borderColor: colors.border }]}
-                  placeholder="e.g., iPhone 13 Pro"
-                  placeholderTextColor={colors.textSecondary}
-                  value={formData.name}
-                  onChangeText={(text) => setFormData((prev) => ({ ...prev, name: text }))}
-                />
+          {/* Photo capture — the hero */}
+          <View style={styles.photoSection}>
+            {productImages.length === 0 ? (
+              <>
+                <PressableScale onPress={handleTakePhoto} haptic="medium">
+                  <GradientBorder
+                    radius={28}
+                    thickness={1.5}
+                    innerBackground={colors.surface}
+                    innerStyle={{ minHeight: 220 }}
+                  >
+                    <View style={styles.photoEmpty}>
+                      <IconBadge icon="camera" size="lg" variant="gradient" />
+                      <Text style={[typography.h2, { color: colors.text, marginTop: 14 }]}>
+                        Take a photo
+                      </Text>
+                      <Text style={[typography.body, { color: colors.textSecondary, marginTop: 4, textAlign: 'center' }]}>
+                        We'll auto-list it on eBay in one tap.
+                      </Text>
+                    </View>
+                  </GradientBorder>
+                </PressableScale>
+                <PressableScale onPress={handlePickPhoto} haptic="selection">
+                  <View style={styles.photoLibBtn}>
+                    <Ionicons name="images-outline" size={16} color={colors.primary} />
+                    <Text style={[typography.bodyMd, { color: colors.primary }]}>
+                      Or pick from your library
+                    </Text>
+                  </View>
+                </PressableScale>
+              </>
+            ) : (
+              <View style={styles.photoStrip}>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photoStripContent}>
+                  {productImages.map((uri, idx) => (
+                    <View key={`${uri}_${idx}`} style={styles.photoThumbWrap}>
+                      <Image source={{ uri }} style={styles.photoThumb} />
+                      <PressableScale
+                        onPress={() => handleRemoveImage(idx)}
+                        haptic="light"
+                        style={styles.removeBtnWrap}
+                      >
+                        <View style={[styles.removeBtn, { backgroundColor: colors.error }]}>
+                          <Ionicons name="close" size={14} color="#fff" />
+                        </View>
+                      </PressableScale>
+                    </View>
+                  ))}
+                  {productImages.length < 5 ? (
+                    <PressableScale onPress={handleTakePhoto} haptic="selection">
+                      <View
+                        style={[
+                          styles.addMorePhoto,
+                          { backgroundColor: colors.surface, borderColor: colors.borderStrong ?? colors.border },
+                        ]}
+                      >
+                        <Ionicons name="add" size={28} color={colors.primary} />
+                      </View>
+                    </PressableScale>
+                  ) : null}
+                </ScrollView>
               </View>
+            )}
+          </View>
 
-              <View style={styles.formGroup}>
-                <Text style={[styles.label, { color: colors.text }]}>Brand</Text>
-                <TextInput
-                  style={[styles.input, { backgroundColor: colors.surface, color: colors.text, borderColor: colors.border }]}
-                  placeholder="e.g., Apple"
-                  placeholderTextColor={colors.textSecondary}
-                  value={formData.brand}
-                  onChangeText={(text) => setFormData((prev) => ({ ...prev, brand: text }))}
+          {/* Category picker */}
+          <View style={styles.section}>
+            <SectionHeader title="What is it?" eyebrow="CATEGORY" />
+            <View style={styles.chipWrap}>
+              {PRODUCT_CATEGORIES.map((c) => (
+                <Chip
+                  key={c.id}
+                  label={c.name}
+                  icon={c.icon as React.ComponentProps<typeof Ionicons>['name']}
+                  active={selectedCategory === c.id}
+                  onPress={() => setSelectedCategory(c.id)}
                 />
-              </View>
+              ))}
+            </View>
+          </View>
 
-              <View style={styles.row}>
-                <View style={[styles.formGroup, styles.halfWidth]}>
-                  <Text style={[styles.label, { color: colors.text }]}>Price ($)</Text>
+          {/* Price + condition row */}
+          <View style={styles.section}>
+            <SectionHeader title="Details" eyebrow="QUICK INFO" />
+            <View style={styles.row}>
+              <View style={[styles.inlineField, { backgroundColor: colors.surface, borderColor: colors.border, flex: 1 }]}>
+                <Text style={[typography.label, { color: colors.textSecondary }]}>PRICE (USD)</Text>
+                <View style={styles.priceInputRow}>
+                  <Text style={[typography.priceLg, { color: colors.text }]}>$</Text>
                   <TextInput
-                    style={[styles.input, { backgroundColor: colors.surface, color: colors.text, borderColor: colors.border }]}
-                    placeholder="0.00"
-                    placeholderTextColor={colors.textSecondary}
-                    value={formData.price?.toString() || ''}
-                    onChangeText={(text) => {
-                      const num = parseFloat(text) || 0;
-                      setFormData((prev) => ({ ...prev, price: num }));
-                    }}
+                    placeholder="0"
+                    placeholderTextColor={colors.textTertiary ?? colors.textSecondary}
                     keyboardType="decimal-pad"
-                  />
-                </View>
-
-                <View style={[styles.formGroup, styles.halfWidth]}>
-                  <Text style={[styles.label, { color: colors.text }]}>Quantity</Text>
-                  <TextInput
-                    style={[styles.input, { backgroundColor: colors.surface, color: colors.text, borderColor: colors.border }]}
-                    placeholder="1"
-                    placeholderTextColor={colors.textSecondary}
-                    value={formData.quantity?.toString() || '1'}
-                    onChangeText={(text) => {
-                      const num = parseInt(text) || 1;
-                      setFormData((prev) => ({ ...prev, quantity: num }));
+                    value={formData.price ? String(formData.price) : ''}
+                    onChangeText={(t) => {
+                      const n = parseFloat(t);
+                      setFormData((p) => ({ ...p, price: isNaN(n) ? 0 : n }));
                     }}
-                    keyboardType="number-pad"
+                    style={[
+                      styles.priceInput,
+                      { color: colors.text, fontFamily: 'GeistMono_600SemiBold' },
+                    ]}
                   />
                 </View>
               </View>
-
-              <View style={styles.formGroup}>
-                <Text style={[styles.label, { color: colors.text }]}>Description</Text>
-                <TextInput
-                  style={[
-                    styles.textArea,
-                    { backgroundColor: colors.surface, color: colors.text, borderColor: colors.border },
-                  ]}
-                  placeholder="Describe your product..."
-                  placeholderTextColor={colors.textSecondary}
-                  value={formData.description}
-                  onChangeText={(text) => setFormData((prev) => ({ ...prev, description: text }))}
-                  multiline
-                  numberOfLines={4}
-                  textAlignVertical="top"
-                />
+              <View style={[styles.inlineField, { backgroundColor: colors.surface, borderColor: colors.border, flex: 1 }]}>
+                <Text style={[typography.label, { color: colors.textSecondary }]}>QTY</Text>
+                <View style={styles.priceInputRow}>
+                  <TextInput
+                    placeholder="1"
+                    placeholderTextColor={colors.textTertiary ?? colors.textSecondary}
+                    keyboardType="number-pad"
+                    value={formData.quantity ? String(formData.quantity) : ''}
+                    onChangeText={(t) => {
+                      const n = parseInt(t, 10);
+                      setFormData((p) => ({ ...p, quantity: isNaN(n) ? 1 : n }));
+                    }}
+                    style={[
+                      styles.priceInput,
+                      { color: colors.text, fontFamily: 'GeistMono_600SemiBold' },
+                    ]}
+                  />
+                </View>
               </View>
+            </View>
 
-              <View style={styles.formGroup}>
-                <Text style={[styles.label, { color: colors.text }]}>Condition</Text>
-                <View style={styles.conditionGrid}>
-                  {PRODUCT_CONDITIONS.map((condition) => (
-                    <TouchableOpacity
-                      key={condition.id}
+            <View style={[styles.conditionRow]}>
+              {CONDITIONS.map((c) => {
+                const isActive = formData.condition === c.id;
+                return (
+                  <PressableScale
+                    key={c.id}
+                    onPress={() => setFormData((p) => ({ ...p, condition: c.id }))}
+                    haptic="selection"
+                    style={styles.conditionTileWrap}
+                  >
+                    <View
                       style={[
-                        styles.conditionCard,
+                        styles.conditionTile,
                         {
-                          backgroundColor:
-                            formData.condition === condition.id ? colors.primary + '20' : colors.surface,
-                          borderColor:
-                            formData.condition === condition.id ? colors.primary : colors.border,
+                          backgroundColor: isActive ? colors.primaryMuted ?? colors.surface : colors.surface,
+                          borderColor: isActive ? colors.primary : colors.border,
                         },
                       ]}
-                      onPress={() => setFormData((prev) => ({ ...prev, condition: condition.id as any }))}
-                      activeOpacity={0.7}
                     >
                       <Text
                         style={[
-                          styles.conditionName,
-                          {
-                            color: formData.condition === condition.id ? colors.primary : colors.text,
-                            fontWeight: formData.condition === condition.id ? '600' : '500',
-                          },
+                          typography.bodyMd,
+                          { color: isActive ? colors.primary : colors.text },
                         ]}
                       >
-                        {condition.name}
+                        {c.name}
                       </Text>
-                      <Text style={[styles.conditionDesc, { color: colors.textSecondary }]}>
-                        {condition.description}
+                      <Text style={[typography.caption, { color: colors.textTertiary ?? colors.textSecondary }]}>
+                        {c.hint}
                       </Text>
-                    </TouchableOpacity>
-                  ))}
+                    </View>
+                  </PressableScale>
+                );
+              })}
+            </View>
+          </View>
+
+          {/* Optional title + brand */}
+          <View style={styles.section}>
+            <SectionHeader title="Title & brand" eyebrow="OPTIONAL" />
+            <View style={[styles.textField, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <TextInput
+                placeholder="e.g. iPhone 14 Pro 256GB"
+                placeholderTextColor={colors.textTertiary ?? colors.textSecondary}
+                value={formData.name}
+                onChangeText={(t) => setFormData((p) => ({ ...p, name: t }))}
+                style={[styles.textInput, { color: colors.text, fontFamily: 'Geist_500Medium' }]}
+              />
+            </View>
+            <View style={[styles.textField, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <TextInput
+                placeholder="Brand (e.g. Apple)"
+                placeholderTextColor={colors.textTertiary ?? colors.textSecondary}
+                value={formData.brand}
+                onChangeText={(t) => setFormData((p) => ({ ...p, brand: t }))}
+                style={[styles.textInput, { color: colors.text, fontFamily: 'Geist_500Medium' }]}
+              />
+            </View>
+          </View>
+
+          {/* eBay toggle row */}
+          <View style={styles.section}>
+            <PressableScale onPress={() => setPostToEbay((v) => !v)} haptic="selection">
+              <View
+                style={[
+                  styles.toggleRow,
+                  {
+                    backgroundColor: postToEbay ? colors.primaryMuted ?? colors.surface : colors.surface,
+                    borderColor: postToEbay ? colors.primary : colors.border,
+                  },
+                ]}
+              >
+                <IconBadge icon="globe-outline" size="md" variant={postToEbay ? 'gradient' : 'subtle'} />
+                <View style={{ flex: 1, gap: 2 }}>
+                  <Text style={[typography.bodyMd, { color: colors.text }]}>
+                    Also list on eBay Sandbox
+                  </Text>
+                  <Text style={[typography.caption, { color: colors.textSecondary }]}>
+                    Real eBay sandbox listing with your photo.
+                  </Text>
+                </View>
+                <View
+                  style={[
+                    styles.toggle,
+                    {
+                      backgroundColor: postToEbay ? colors.primary : colors.surfaceSunk ?? colors.surface,
+                      borderColor: postToEbay ? colors.primary : colors.borderStrong ?? colors.border,
+                    },
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.toggleKnob,
+                      { transform: [{ translateX: postToEbay ? 14 : 0 }] },
+                    ]}
+                  />
                 </View>
               </View>
+            </PressableScale>
+          </View>
+        </ScrollView>
 
-              <View style={styles.checkboxGroup}>
-                <TouchableOpacity
-                  style={styles.checkbox}
-                  onPress={() => setFormData((prev) => ({ ...prev, inStock: !prev.inStock }))}
-                  activeOpacity={0.7}
-                >
-                  <Ionicons
-                    name={formData.inStock ? 'checkbox' : 'square-outline'}
-                    size={24}
-                    color={formData.inStock ? colors.success : colors.textSecondary}
-                  />
-                  <Text style={[styles.checkboxLabel, { color: colors.text }]}>In Stock</Text>
-                </TouchableOpacity>
+        {/* Fade-mask so the form doesn't crash into the floating submit button */}
+        <LinearGradient
+          colors={['rgba(10, 10, 15, 0)', 'rgba(10, 10, 15, 0.92)', 'rgba(10, 10, 15, 1)']}
+          locations={[0, 0.55, 1]}
+          start={{ x: 0.5, y: 0 }}
+          end={{ x: 0.5, y: 1 }}
+          pointerEvents="none"
+          style={[styles.submitFadeMask, { bottom: insets.bottom + 92, height: 80 }]}
+        />
 
-                <TouchableOpacity
-                  style={styles.checkbox}
-                  onPress={() => setFormData((prev) => ({ ...prev, fastDelivery: !prev.fastDelivery }))}
-                  activeOpacity={0.7}
-                >
-                  <Ionicons
-                    name={formData.fastDelivery ? 'checkbox' : 'square-outline'}
-                    size={24}
-                    color={formData.fastDelivery ? colors.success : colors.textSecondary}
-                  />
-                  <Text style={[styles.checkboxLabel, { color: colors.text }]}>Fast Delivery Available</Text>
-                </TouchableOpacity>
-              </View>
+        {/* Floating submit button — sits above the tab bar */}
+        <View
+          style={[
+            styles.submitWrap,
+            { bottom: insets.bottom + 96 },
+          ]}
+          pointerEvents="box-none"
+        >
+          {formValid ? (
+            <GradientButton
+              label={postToEbay ? 'List on eBay' : 'Save listing'}
+              icon="arrow-forward-circle"
+              size="lg"
+              loading={isSubmitting}
+              onPress={handleSubmit}
+            />
+          ) : (
+            <View
+              style={[
+                styles.submitHint,
+                { backgroundColor: colors.surface, borderColor: colors.borderStrong ?? colors.border },
+              ]}
+            >
+              <Ionicons name="arrow-up-outline" size={16} color={colors.textSecondary} />
+              <Text style={[typography.bodyMd, { color: colors.textSecondary }]}>
+                {productImages.length === 0 ? 'Add a photo to continue' : 'Pick a category to continue'}
+              </Text>
             </View>
           )}
         </View>
-      )}
+      </KeyboardAvoidingView>
 
-          {/* Marketplace Selection */}
-          {selectedCategory && (
-            <View style={styles.section}>
-              <View style={styles.sectionHeaderRow}>
-                <Text style={[styles.sectionTitle, { color: colors.text, ...typography.h3 }]}>
-                  Post to Marketplaces (Optional)
+      {/* Verification / success modal */}
+      <Modal visible={showModal} transparent animationType="none" onRequestClose={() => setShowModal(false)}>
+        <View style={styles.modalOverlay}>
+          <Animated.View
+            style={[
+              styles.modalCard,
+              {
+                backgroundColor: colors.surfaceRaised ?? colors.surface,
+                borderColor: colors.borderStrong ?? colors.border,
+                opacity: fade,
+                transform: [{ scale: scaleAnim }],
+              },
+            ]}
+          >
+            {modalState === 'working' ? (
+              <>
+                <AuroraOrb size={88} state="thinking" />
+                <Text style={[typography.h2, { color: colors.text, marginTop: 12, textAlign: 'center' }]}>
+                  Listing your item…
                 </Text>
-              </View>
-              <Text style={[styles.sectionSubtitle, { color: colors.textSecondary }]}>
-                Select where you want to list your product
-              </Text>
-
-          <View style={styles.marketplaceGrid}>
-            {MARKETPLACE_PLATFORMS.map((platform) => {
-              const connection = marketplaceConnections.find(c => c.platform === platform.id);
-              const isSelected = selectedMarketplaces.includes(platform.id);
-              const isConnected = connection?.connected || false;
-              const isComingSoon = platform.comingSoon || false;
-
-              return (
-                <TouchableOpacity
-                  key={platform.id}
-                  style={[
-                    styles.marketplaceCard,
-                    {
-                      backgroundColor: isSelected ? platform.color + '20' : colors.surface,
-                      borderColor: isSelected ? platform.color : colors.border,
-                      opacity: isComingSoon ? 0.5 : (isConnected ? 1 : 0.6),
-                    },
-                  ]}
-                  onPress={() => {
-                    if (isComingSoon) {
-                      Alert.alert('Coming Soon', `${platform.name} Marketplace integration is coming soon!`);
-                      return;
-                    }
-                    // Toggle marketplace selection (UI only - no actual posting)
-                    setSelectedMarketplaces((prev) =>
-                      prev.includes(platform.id)
-                        ? prev.filter((p) => p !== platform.id)
-                        : [...prev, platform.id]
-                    );
-                  }}
-                  activeOpacity={isComingSoon ? 1 : 0.7}
-                  disabled={isComingSoon}
-                >
-                  <View style={styles.marketplaceHeader}>
-                    <View style={[styles.marketplaceIcon, { backgroundColor: platform.color + '20' }]}>
-                      <Ionicons name={platform.icon as any} size={24} color={platform.color} />
+                <Text style={[typography.body, { color: colors.textSecondary, textAlign: 'center', marginTop: 4 }]}>
+                  Uploading photo, talking to eBay, publishing.
+                </Text>
+              </>
+            ) : modalState === 'success' ? (
+              <>
+                <AuroraOrb size={88} state="responding" />
+                <Text style={[typography.h1, { color: colors.text, marginTop: 12, textAlign: 'center' }]}>
+                  You're live.
+                </Text>
+                <Text style={[typography.body, { color: colors.textSecondary, textAlign: 'center', marginTop: 4 }]}>
+                  {lastListingUrl ? 'Your eBay sandbox listing is ready to view.' : 'Saved to your listings.'}
+                </Text>
+                <View style={styles.modalActions}>
+                  {lastListingUrl ? (
+                    <GradientButton
+                      label="View on eBay"
+                      icon="open-outline"
+                      size="md"
+                      onPress={() => {
+                        const url = lastListingUrl;
+                        setShowModal(false);
+                        if (url) {
+                          // Use the statically-imported Linking — a dynamic
+                          // `import('react-native')` evaluates the entire
+                          // barrel and triggers PushNotificationIOS, which
+                          // crashes because we cleared the push entitlement.
+                          Linking.openURL(url).catch(() => undefined);
+                        }
+                      }}
+                    />
+                  ) : null}
+                  <PressableScale onPress={closeModalAndReset} haptic="selection">
+                    <View
+                      style={[
+                        styles.modalSecondary,
+                        { borderColor: colors.borderStrong ?? colors.border },
+                      ]}
+                    >
+                      <Text style={[typography.bodyMd, { color: colors.text }]}>List another</Text>
                     </View>
-                    {isSelected && !isComingSoon && (
-                      <View style={[styles.selectedBadge, { backgroundColor: platform.color }]}>
-                        <Ionicons name="checkmark" size={16} color="#FFFFFF" />
-                      </View>
-                    )}
-                    {isComingSoon && (
-                      <View style={[styles.comingSoonBadge, { backgroundColor: colors.textSecondary }]}>
-                        <Text style={styles.comingSoonBadgeText}>SOON</Text>
-                      </View>
-                    )}
-                  </View>
-                  <Text
-                    style={[
-                      styles.marketplaceName,
-                      {
-                        color: isSelected && !isComingSoon ? platform.color : colors.text,
-                        fontWeight: isSelected && !isComingSoon ? '700' : '600',
-                      },
-                    ]}
-                  >
-                    {platform.name}
-                  </Text>
-                  {isComingSoon ? (
-                    <Text style={[styles.marketplaceStatus, { color: colors.textSecondary }]}>
-                      Coming Soon
-                    </Text>
-                  ) : !isConnected ? (
-                    <Text style={[styles.marketplaceStatus, { color: colors.textSecondary }]}>
-                      Tap to connect
-                    </Text>
-                  ) : isConnected && !isSelected ? (
-                    <Text style={[styles.marketplaceStatus, { color: colors.success }]}>
-                      Connected
-                    </Text>
-                  ) : (
-                    <Text style={[styles.marketplaceStatus, { color: platform.color }]}>
-                      Will post here
-                    </Text>
-                  )}
-                </TouchableOpacity>
-              );
-            })}
-          </View>
+                  </PressableScale>
+                </View>
+              </>
+            ) : (
+              <>
+                <View style={[styles.failIcon, { backgroundColor: `${colors.error}22` }]}>
+                  <Ionicons name="alert-circle-outline" size={36} color={colors.error} />
+                </View>
+                <Text style={[typography.h2, { color: colors.text, marginTop: 12, textAlign: 'center' }]}>
+                  Couldn't list on eBay
+                </Text>
+                <Text
+                  style={[typography.caption, { color: colors.textSecondary, textAlign: 'center', marginTop: 4 }]}
+                  numberOfLines={3}
+                >
+                  {lastError || 'Try again, or save locally for now.'}
+                </Text>
+                <View style={styles.modalActions}>
+                  <GradientButton
+                    label="Try again"
+                    icon="refresh-outline"
+                    size="md"
+                    onPress={() => {
+                      setShowModal(false);
+                      setTimeout(handleSubmit, 220);
+                    }}
+                  />
+                  <PressableScale onPress={closeModalAndReset} haptic="selection">
+                    <View style={[styles.modalSecondary, { borderColor: colors.borderStrong ?? colors.border }]}>
+                      <Text style={[typography.bodyMd, { color: colors.text }]}>Save locally</Text>
+                    </View>
+                  </PressableScale>
+                </View>
+              </>
+            )}
+          </Animated.View>
         </View>
-      )}
-
-      {/* List Product Now Button - At the end */}
-      {selectedCategory && productImages.length > 0 && (
-        <TouchableOpacity
-          style={[
-            styles.quickSubmitButton,
-            {
-              backgroundColor: colors.primary,
-              opacity: isSubmitting ? 0.6 : 1,
-            },
-          ]}
-          onPress={handleSubmit}
-          disabled={isSubmitting}
-          activeOpacity={0.8}
-        >
-          {isSubmitting ? (
-            <ActivityIndicator color="#FFFFFF" />
-          ) : (
-            <>
-              <Ionicons name="checkmark-circle" size={24} color="#FFFFFF" />
-              <Text style={styles.quickSubmitText}>List Product Now</Text>
-            </>
-          )}
-        </TouchableOpacity>
-      )}
-
-
-      <View style={{ height: 40 }} />
-    </ScrollView>
-
-    {/* Verification Modal */}
-    <Modal
-      visible={showVerificationModal}
-      transparent={true}
-      animationType="none"
-      onRequestClose={() => {}}
-    >
-      <View style={styles.modalOverlay}>
-        <Animated.View
-          style={[
-            styles.modalContent,
-            {
-              opacity: fadeAnim,
-              transform: [{ scale: scaleAnim }],
-            },
-          ]}
-        >
-          <View style={styles.modalIconContainer}>
-            <Ionicons name="checkmark-circle" size={80} color={colors.success} />
-          </View>
-          <Text style={[styles.modalTitle, { color: colors.text }]}>
-            Product Submitted!
-          </Text>
-          <Text style={[styles.modalMessage, { color: colors.textSecondary }]}>
-            {selectedMarketplaces.includes('ebay')
-              ? 'Your product will be verified and posted to eBay soon'
-              : 'Your product will be verified and listed soon'}
-          </Text>
-          <ActivityIndicator size="large" color={colors.primary} style={styles.modalSpinner} />
-        </Animated.View>
-      </View>
-    </Modal>
+      </Modal>
     </View>
   );
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  contentContainer: {
+  container: { flex: 1 },
+  flex: { flex: 1 },
+  content: {
     paddingHorizontal: 20,
+    gap: 24,
   },
-  header: {
-    paddingVertical: 24,
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  sellerTitle: {
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  sellerSubtitle: {
-    textAlign: 'center',
-    opacity: 0.8,
-    paddingHorizontal: 20,
-  },
-  section: {
-    marginBottom: 24,
-  },
-  sectionTitle: {
-    marginBottom: 8,
-    fontWeight: '600',
-  },
-  sectionSubtitle: {
-    fontSize: 12,
-    marginBottom: 12,
-    opacity: 0.7,
-  },
-  sectionHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 6,
-  },
-  connectButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
-    gap: 6,
-  },
-  connectButtonText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  categoryGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-    marginTop: 12,
-  },
-  categoryCard: {
-    width: '30%',
-    aspectRatio: 1,
-    borderRadius: 16,
-    borderWidth: 2,
+
+  hero: { gap: 2 },
+
+  photoSection: { gap: 12 },
+  photoEmpty: {
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 12,
+    paddingVertical: 28,
+    paddingHorizontal: 20,
   },
-  categoryText: {
-    fontSize: 12,
-    marginTop: 8,
-    textAlign: 'center',
-  },
-  imageScroll: {
-    marginTop: 12,
-  },
-  imageContainer: {
+  photoStrip: {},
+  photoStripContent: { gap: 12, paddingVertical: 4 },
+  photoThumbWrap: {
     position: 'relative',
-    marginRight: 12,
+    width: 110,
+    height: 110,
+    borderRadius: 18,
+    overflow: 'hidden',
   },
-  productImage: {
-    width: 120,
-    height: 120,
-    borderRadius: 12,
-    backgroundColor: '#F5F5F5',
-  },
-  removeImageButton: {
-    position: 'absolute',
-    top: -8,
-    right: -8,
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+  photoThumb: { width: 110, height: 110, borderRadius: 18 },
+  removeBtnWrap: { position: 'absolute', top: 4, right: 4 },
+  removeBtn: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
     alignItems: 'center',
     justifyContent: 'center',
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
   },
-  addImageButton: {
-    width: 120,
-    height: 120,
-    borderRadius: 12,
-    borderWidth: 2,
+  addMorePhoto: {
+    width: 110,
+    height: 110,
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
     borderStyle: 'dashed',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 12,
   },
-  addImageText: {
-    fontSize: 11,
-    marginTop: 8,
-    textAlign: 'center',
+
+  section: { gap: 12 },
+  chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+
+  row: { flexDirection: 'row', gap: 12 },
+  inlineField: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: 6,
   },
-  formGroup: {
-    marginBottom: 20,
-  },
-  label: {
-    fontSize: 14,
-    fontWeight: '600',
-    marginBottom: 8,
-  },
-  input: {
-    borderRadius: 12,
-    borderWidth: 1,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    fontSize: 16,
-  },
-  textArea: {
-    borderRadius: 12,
-    borderWidth: 1,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    fontSize: 16,
-    minHeight: 100,
-  },
-  row: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  halfWidth: {
+  priceInputRow: { flexDirection: 'row', alignItems: 'baseline', gap: 4 },
+  priceInput: {
     flex: 1,
+    fontSize: 22,
+    paddingVertical: 0,
   },
-  conditionGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-    marginTop: 8,
+
+  conditionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  conditionTileWrap: {
+    minWidth: '47%',
+    flexGrow: 1,
   },
-  conditionCard: {
-    flex: 1,
-    minWidth: '45%',
-    borderRadius: 12,
-    borderWidth: 2,
-    padding: 12,
-  },
-  conditionName: {
-    fontSize: 14,
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  conditionDesc: {
-    fontSize: 11,
-  },
-  checkboxGroup: {
-    gap: 12,
-    marginTop: 8,
-  },
-  checkbox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  checkboxLabel: {
-    fontSize: 14,
-  },
-  quickSubmitButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 18,
+  conditionTile: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
     borderRadius: 16,
-    gap: 8,
-    marginTop: 8,
-    marginBottom: 24,
-    elevation: 4,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: 2,
   },
-  quickSubmitText: {
-    color: '#FFFFFF',
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  submitButton: {
+
+  photoLibBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 16,
+    gap: 6,
+    paddingVertical: 10,
+    marginTop: -4,
+  },
+
+  textField: {
     borderRadius: 16,
-    gap: 8,
-    elevation: 4,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 14,
+    paddingVertical: 4,
   },
-  submitButtonText: {
-    color: '#FFFFFF',
-    fontSize: 18,
-    fontWeight: '700',
+  textInput: {
+    fontSize: 15,
+    paddingVertical: 12,
   },
-  marketplaceGrid: {
+
+  toggleRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    alignItems: 'center',
     gap: 12,
-    marginTop: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    borderRadius: 20,
+    borderWidth: StyleSheet.hairlineWidth,
   },
-  marketplaceCard: {
-    width: '30%',
-    aspectRatio: 1.2,
-    borderRadius: 16,
-    borderWidth: 2,
-    padding: 12,
-    alignItems: 'center',
+  toggle: {
+    width: 36,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: StyleSheet.hairlineWidth,
     justifyContent: 'center',
-    position: 'relative',
+    padding: 2,
   },
-  marketplaceHeader: {
-    position: 'relative',
-    marginBottom: 8,
-  },
-  marketplaceIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  selectedBadge: {
-    position: 'absolute',
-    top: -4,
-    right: -4,
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: '#000000',
-  },
-  comingSoonBadge: {
-    position: 'absolute',
-    top: -4,
-    right: -4,
+  toggleKnob: {
+    width: 16,
+    height: 16,
     borderRadius: 8,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
+    backgroundColor: '#fff',
+  },
+
+  submitWrap: {
+    position: 'absolute',
+    left: 14,
+    right: 14,
+  },
+  submitFadeMask: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+  },
+  submitHint: {
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 16,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderStyle: 'dashed',
   },
-  comingSoonBadgeText: {
-    color: '#FFFFFF',
-    fontSize: 8,
-    fontWeight: 'bold',
-    letterSpacing: 0.5,
-  },
-  marketplaceName: {
-    fontSize: 13,
-    fontWeight: '600',
-    textAlign: 'center',
-    marginBottom: 4,
-  },
-  marketplaceStatus: {
-    fontSize: 10,
-    textAlign: 'center',
-    fontWeight: '500',
-  },
-  progressContainer: {
-    marginBottom: 12,
-  },
-  progressBarContainer: {
-    height: 8,
-    borderRadius: 4,
-    overflow: 'hidden',
-    marginBottom: 4,
-  },
-  progressBar: {
-    height: '100%',
-    borderRadius: 4,
-  },
-  progressText: {
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  collapsibleHeader: {
-    marginBottom: 12,
-  },
-  collapsibleHeaderContent: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 4,
-  },
-  collapsibleContent: {
-    marginTop: 12,
-  },
+
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    backgroundColor: 'rgba(10, 10, 15, 0.78)',
+    alignItems: 'center',
     justifyContent: 'center',
+    padding: 24,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 380,
+    borderRadius: 28,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: 28,
     alignItems: 'center',
+    gap: 4,
   },
-  modalContent: {
-    backgroundColor: '#1C1C1E',
-    borderRadius: 24,
-    padding: 32,
+  modalActions: {
+    width: '100%',
+    gap: 10,
+    marginTop: 20,
+  },
+  modalSecondary: {
     alignItems: 'center',
-    width: '85%',
-    maxWidth: 400,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 8,
-    },
-    shadowOpacity: 0.3,
-    shadowRadius: 16,
-    elevation: 10,
+    paddingVertical: 14,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
   },
-  modalIconContainer: {
-    marginBottom: 24,
-  },
-  modalTitle: {
-    fontSize: 24,
-    fontWeight: '700',
-    marginBottom: 12,
-    textAlign: 'center',
-  },
-  modalMessage: {
-    fontSize: 16,
-    textAlign: 'center',
-    marginBottom: 24,
-    lineHeight: 22,
-  },
-  modalSpinner: {
-    marginTop: 8,
+  failIcon: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });
-

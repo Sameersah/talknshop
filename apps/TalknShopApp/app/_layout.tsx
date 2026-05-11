@@ -4,6 +4,16 @@ import { View } from 'react-native';
 import { Provider } from 'react-redux';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PersistGate } from 'redux-persist/integration/react';
+import {
+  useFonts as useGeistFonts,
+  Geist_400Regular,
+  Geist_500Medium,
+  Geist_600SemiBold,
+} from '@expo-google-fonts/geist';
+import {
+  GeistMono_500Medium,
+  GeistMono_600SemiBold,
+} from '@expo-google-fonts/geist-mono';
 import { store, persistor } from '@/store';
 import { ThemeProvider } from '@/components/ThemeProvider';
 import { AuthProvider } from '@/components/AuthProvider';
@@ -41,6 +51,17 @@ function RootLayoutContent() {
 }
 
 export default function RootLayout() {
+  // Geist + Geist Mono power the entire typographic system. If they fail to
+  // load we still render — RN falls back to system font, so worst case is
+  // momentarily-uglier text on first launch.
+  const [fontsLoaded] = useGeistFonts({
+    Geist_400Regular,
+    Geist_500Medium,
+    Geist_600SemiBold,
+    GeistMono_500Medium,
+    GeistMono_600SemiBold,
+  });
+
   return (
     <Provider store={store}>
       <PersistGate loading={null} persistor={persistor}>
@@ -48,7 +69,13 @@ export default function RootLayout() {
           <ThemeProvider>
             <AuthProvider>
               <NotificationProvider>
-                <RootLayoutContent />
+                {fontsLoaded ? (
+                  <RootLayoutContent />
+                ) : (
+                  // Tiny "splash" window — usually < 200ms. Pure-color view
+                  // avoids a flash of system font on a near-black canvas.
+                  <View style={{ flex: 1, backgroundColor: '#0A0A0F' }} />
+                )}
               </NotificationProvider>
             </AuthProvider>
           </ThemeProvider>

@@ -1,17 +1,40 @@
 import { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Image, ActivityIndicator } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  Image,
+  ActivityIndicator,
+  Linking,
+  Alert,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
 import { useAuth } from '@/components/AuthProvider';
 import { sellerService } from '@/services/sellerService';
-import { SellerProduct } from '@/data/sellerProducts';
+import {
+  SellerProduct,
+  loadSellerProducts,
+  getSellerProducts,
+  clearSellerProducts,
+} from '@/data/sellerProducts';
 import { Ionicons } from '@expo/vector-icons';
+import {
+  Avatar,
+  IconBadge,
+  PressableScale,
+  SectionHeader,
+  StatCard,
+  WhisperBackground,
+} from '@/components/ui';
 
 export default function ProfileScreen() {
   const { colors, typography } = useTheme();
   const { user, logout, isLoading } = useAuth();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const [listings, setListings] = useState<SellerProduct[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -22,8 +45,15 @@ export default function ProfileScreen() {
   const loadListings = async () => {
     try {
       setLoading(true);
-      const myListings = await sellerService.getMyListings();
-      setListings(myListings);
+      await loadSellerProducts();
+      const local = getSellerProducts('current-user');
+      if (local.length > 0) setListings(local);
+      try {
+        const remote = await sellerService.getMyListings();
+        if (remote.length > 0) setListings(remote);
+      } catch {
+        // backend unavailable — local listings already shown
+      }
     } catch (error) {
       console.error('Error loading listings:', error);
     } finally {
@@ -40,241 +70,332 @@ export default function ProfileScreen() {
     }
   };
 
-  return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
-      <ScrollView style={styles.scrollView} contentContainerStyle={styles.content}>
-        <Text style={[styles.title, { color: colors.text, ...typography.h1 }]}>Profile</Text>
+  const handleClearAll = () => {
+    Alert.alert(
+      'Clear all listings?',
+      `Permanently deletes ${listings.length} local listing${listings.length === 1 ? '' : 's'}. eBay Sandbox copies stay on eBay's side. Cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete all',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await clearSellerProducts();
+              setListings([]);
+            } catch {
+              Alert.alert('Error', 'Failed to clear listings.');
+            }
+          },
+        },
+      ],
+    );
+  };
 
-        <View style={[styles.userInfo, { backgroundColor: colors.surface }]}>
-          <Text style={[styles.userName, { color: colors.text, ...typography.h3 }]}>
-            {user?.name || 'Guest User'}
-          </Text>
-          <Text style={[styles.userEmail, { color: colors.textSecondary }]}>
-            {user?.email || 'guest@example.com'}
-          </Text>
+  const liveListings = listings.filter((l) => l.ebayListingUrl).length;
+  const localListings = listings.length - liveListings;
+
+  return (
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <WhisperBackground />
+      <ScrollView
+        style={styles.flex}
+        contentContainerStyle={[
+          styles.content,
+          { paddingTop: insets.top + 20, paddingBottom: insets.bottom + 120 },
+        ]}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Hero — avatar + name + email */}
+        <View style={styles.heroRow}>
+          <Avatar name={user?.name || user?.email || 'Guest'} size={72} />
+          <View style={styles.heroText}>
+            <Text style={[typography.label, { color: colors.textSecondary }]}>MEMBER</Text>
+            <Text style={[typography.h1, { color: colors.text, marginTop: 2 }]} numberOfLines={1}>
+              {user?.name || 'Welcome'}
+            </Text>
+            <Text style={[typography.body, { color: colors.textSecondary }]} numberOfLines={1}>
+              {user?.email || 'guest@example.com'}
+            </Text>
+          </View>
         </View>
 
-        {/* My Listings Section */}
-        <View style={styles.listingsSection}>
-          <View style={styles.sectionHeader}>
-            <Text style={[styles.sectionTitle, { color: colors.text, ...typography.h3 }]}>
-              My Listings
-            </Text>
-            <TouchableOpacity onPress={loadListings}>
-              <Ionicons name="refresh" size={20} color={colors.primary} />
-            </TouchableOpacity>
-          </View>
+        {/* Stat row */}
+        <View style={styles.statRow}>
+          <StatCard
+            value={listings.length}
+            label="LISTINGS"
+            icon="cube-outline"
+            variant={listings.length > 0 ? 'accent' : 'empty'}
+          />
+          <StatCard value={liveListings} label="LIVE ON EBAY" icon="globe-outline" />
+          <StatCard value={localListings} label="DRAFTS" icon="bookmark-outline" />
+        </View>
+
+        {/* Listings */}
+        <View style={styles.section}>
+          <SectionHeader
+            title="Your listings"
+            eyebrow="WHAT YOU'VE LISTED"
+            actionLabel={listings.length > 0 ? 'Clear all' : undefined}
+            onActionPress={listings.length > 0 ? handleClearAll : undefined}
+          />
 
           {loading ? (
-            <View style={styles.loadingContainer}>
+            <View style={styles.centerRow}>
               <ActivityIndicator color={colors.primary} />
-              <Text style={[styles.loadingText, { color: colors.textSecondary }]}>
-                Loading listings...
-              </Text>
+              <Text style={[typography.caption, { color: colors.textSecondary }]}>Loading…</Text>
             </View>
           ) : listings.length === 0 ? (
-            <View style={[styles.emptyContainer, { backgroundColor: colors.surface }]}>
-              <Ionicons name="cube-outline" size={48} color={colors.textSecondary} />
-              <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
-                No listings yet
-              </Text>
-              <Text style={[styles.emptySubtext, { color: colors.textSecondary }]}>
-                Start selling by creating your first listing
-              </Text>
-            </View>
+            <PressableScale onPress={() => router.push('/(tabs)/sell')} haptic="selection">
+              <View
+                style={[
+                  styles.emptyCard,
+                  {
+                    backgroundColor: colors.surface,
+                    borderColor: colors.borderStrong ?? colors.border,
+                  },
+                ]}
+              >
+                <IconBadge icon="add-circle-outline" size="lg" variant="subtle" />
+                <View style={styles.emptyCardText}>
+                  <Text style={[typography.bodyMd, { color: colors.text }]}>
+                    Snap a photo, list to eBay
+                  </Text>
+                  <Text style={[typography.caption, { color: colors.textSecondary }]}>
+                    Tap to start your first listing.
+                  </Text>
+                </View>
+                <Ionicons name="arrow-forward" size={16} color={colors.textSecondary} />
+              </View>
+            </PressableScale>
           ) : (
             <View style={styles.listingsList}>
               {listings.map((listing) => (
-                <TouchableOpacity
+                <PressableScale
                   key={listing.id}
-                  style={[styles.listingCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
-                  activeOpacity={0.7}
+                  haptic="selection"
+                  onPress={() => {
+                    if (listing.ebayListingUrl) {
+                      Linking.openURL(listing.ebayListingUrl).catch(() =>
+                        Alert.alert('Error', 'Could not open the eBay listing.'),
+                      );
+                    } else {
+                      Alert.alert(
+                        listing.name,
+                        `$${listing.price.toFixed(2)} · ${listing.category} · ${listing.condition}\n\nSaved locally — no eBay link yet.`,
+                        [{ text: 'OK' }],
+                      );
+                    }
+                  }}
                 >
-                  {listing.image && (
-                    <Image
-                      source={{ uri: typeof listing.image === 'string' ? listing.image : listing.image }}
-                      style={styles.listingImage}
-                      resizeMode="cover"
-                    />
-                  )}
-                  <View style={styles.listingInfo}>
-                    <Text style={[styles.listingName, { color: colors.text }]} numberOfLines={2}>
-                      {listing.name}
-                    </Text>
-                    <Text style={[styles.listingPrice, { color: colors.primary }]}>
-                      ${listing.price.toFixed(2)}
-                    </Text>
-                    <View style={styles.listingMeta}>
-                      <Text style={[styles.listingMetaText, { color: colors.textSecondary }]}>
-                        {listing.category}
+                  <View
+                    style={[
+                      styles.listingCard,
+                      { backgroundColor: colors.surface, borderColor: colors.border },
+                    ]}
+                  >
+                    {listing.image ? (
+                      <Image
+                        source={{ uri: typeof listing.image === 'string' ? listing.image : listing.image }}
+                        style={styles.listingImage}
+                        resizeMode="cover"
+                      />
+                    ) : (
+                      <View
+                        style={[
+                          styles.listingImage,
+                          {
+                            backgroundColor: colors.surfaceSunk ?? colors.background,
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          },
+                        ]}
+                      >
+                        <Ionicons name="image-outline" size={22} color={colors.textTertiary ?? colors.textSecondary} />
+                      </View>
+                    )}
+                    <View style={styles.listingInfo}>
+                      <Text style={[typography.bodyMd, { color: colors.text }]} numberOfLines={2}>
+                        {listing.name}
                       </Text>
-                      <Text style={[styles.listingMetaText, { color: colors.textSecondary }]}>
-                        • {listing.condition}
-                      </Text>
+                      <View style={styles.listingMetaRow}>
+                        <Text style={[typography.caption, { color: colors.textTertiary ?? colors.textSecondary }]}>
+                          {listing.category}
+                        </Text>
+                        <Text style={[typography.caption, { color: colors.textTertiary ?? colors.textSecondary }]}>
+                          · {listing.condition}
+                        </Text>
+                      </View>
+                      <View style={styles.listingFooter}>
+                        <Text style={[typography.priceLg, { color: colors.text }]}>${listing.price.toFixed(2)}</Text>
+                        {listing.ebayListingUrl ? (
+                          <View style={[styles.liveTag, { backgroundColor: colors.primaryMuted ?? colors.surface }]}>
+                            <View style={[styles.liveDot, { backgroundColor: colors.success }]} />
+                            <Text style={[typography.label, { color: colors.primary }]}>LIVE</Text>
+                          </View>
+                        ) : (
+                          <Text style={[typography.label, { color: colors.textTertiary ?? colors.textSecondary }]}>
+                            LOCAL
+                          </Text>
+                        )}
+                      </View>
                     </View>
+                    <Ionicons
+                      name={listing.ebayListingUrl ? 'arrow-up-circle' : 'chevron-forward'}
+                      size={20}
+                      color={listing.ebayListingUrl ? colors.primary : colors.textTertiary ?? colors.textSecondary}
+                    />
                   </View>
-                  <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
-                </TouchableOpacity>
+                </PressableScale>
               ))}
             </View>
           )}
         </View>
 
-        <View style={styles.menu}>
-          <TouchableOpacity style={[styles.menuItem, { borderBottomColor: colors.border }]}>
-            <Text style={[styles.menuText, { color: colors.text }]}>Settings</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.menuItem, { borderBottomColor: colors.border }]}>
-            <Text style={[styles.menuText, { color: colors.text }]}>Notifications</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.menuItem, { borderBottomColor: colors.border }]}>
-            <Text style={[styles.menuText, { color: colors.text }]}>Help & Support</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={[styles.menuItem, { borderBottomColor: colors.border }]}>
-            <Text style={[styles.menuText, { color: colors.text }]}>About</Text>
-          </TouchableOpacity>
+        {/* Settings menu */}
+        <View style={styles.section}>
+          <SectionHeader title="Account" eyebrow="PREFERENCES" />
+          <View style={[styles.menuCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            {[
+              { label: 'Settings', icon: 'options-outline' as const },
+              { label: 'Notifications', icon: 'notifications-outline' as const },
+              { label: 'Help & Support', icon: 'help-circle-outline' as const },
+              { label: 'About', icon: 'information-circle-outline' as const },
+            ].map((item, idx, arr) => (
+              <PressableScale key={item.label} haptic="selection" onPress={() => {}}>
+                <View
+                  style={[
+                    styles.menuItem,
+                    idx < arr.length - 1
+                      ? { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border }
+                      : null,
+                  ]}
+                >
+                  <IconBadge icon={item.icon} size="sm" variant="subtle" />
+                  <Text style={[typography.bodyMd, { color: colors.text, flex: 1 }]}>{item.label}</Text>
+                  <Ionicons name="chevron-forward" size={16} color={colors.textTertiary ?? colors.textSecondary} />
+                </View>
+              </PressableScale>
+            ))}
+          </View>
         </View>
 
-        <TouchableOpacity
-          style={[
-            styles.logoutButton, 
-            { 
-              backgroundColor: colors.error,
-              opacity: isLoading ? 0.6 : 1,
-            }
-          ]}
-          onPress={handleLogout}
-          disabled={isLoading}
-          activeOpacity={0.8}
-        >
-          {isLoading ? (
-            <ActivityIndicator color="#FFFFFF" />
-          ) : (
-            <Text style={styles.logoutText}>Sign Out</Text>
-          )}
-        </TouchableOpacity>
+        {/* Sign out */}
+        <PressableScale onPress={handleLogout} disabled={isLoading} haptic="medium">
+          <View
+            style={[
+              styles.signOutBtn,
+              { borderColor: colors.borderStrong ?? colors.border, opacity: isLoading ? 0.6 : 1 },
+            ]}
+          >
+            {isLoading ? (
+              <ActivityIndicator color={colors.error} />
+            ) : (
+              <>
+                <Ionicons name="log-out-outline" size={18} color={colors.error} />
+                <Text style={[typography.bodyMd, { color: colors.error }]}>Sign out</Text>
+              </>
+            )}
+          </View>
+        </PressableScale>
       </ScrollView>
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  scrollView: {
-    flex: 1,
-  },
+  container: { flex: 1 },
+  flex: { flex: 1 },
   content: {
-    padding: 16,
-    paddingBottom: 32,
+    paddingHorizontal: 20,
+    gap: 24,
   },
-  title: {
-    textAlign: 'center',
-    marginBottom: 24,
-  },
-  userInfo: {
-    padding: 20,
-    borderRadius: 12,
-    alignItems: 'center',
-    marginBottom: 24,
-  },
-  userName: {
-    marginBottom: 4,
-  },
-  userEmail: {
-    fontSize: 14,
-  },
-  listingsSection: {
-    marginBottom: 24,
-  },
-  sectionHeader: {
+
+  heroRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 12,
+    gap: 16,
   },
-  sectionTitle: {
-    fontWeight: '600',
+  heroText: { flex: 1, minWidth: 0 },
+
+  statRow: {
+    flexDirection: 'row',
+    gap: 10,
   },
-  loadingContainer: {
-    padding: 32,
+
+  section: { gap: 12 },
+  centerRow: {
+    flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 10,
+    paddingVertical: 16,
   },
-  loadingText: {
-    fontSize: 14,
-  },
-  emptyContainer: {
-    padding: 32,
-    borderRadius: 12,
+  emptyCard: {
+    flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    borderRadius: 20,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderStyle: 'dashed',
   },
-  emptyText: {
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  emptySubtext: {
-    fontSize: 14,
-    textAlign: 'center',
-  },
-  listingsList: {
-    gap: 12,
-  },
+  emptyCardText: { flex: 1, gap: 2 },
+
+  listingsList: { gap: 10 },
   listingCard: {
     flexDirection: 'row',
-    padding: 12,
-    borderRadius: 12,
-    borderWidth: 1,
     alignItems: 'center',
     gap: 12,
+    padding: 12,
+    borderRadius: 20,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   listingImage: {
-    width: 60,
-    height: 60,
-    borderRadius: 8,
-    backgroundColor: '#2C2C2E',
+    width: 64,
+    height: 64,
+    borderRadius: 14,
+    overflow: 'hidden',
   },
-  listingInfo: {
-    flex: 1,
-    gap: 4,
-  },
-  listingName: {
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  listingPrice: {
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  listingMeta: {
+  listingInfo: { flex: 1, gap: 4 },
+  listingMetaRow: { flexDirection: 'row', gap: 4 },
+  listingFooter: {
     flexDirection: 'row',
-    gap: 8,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 4,
   },
-  listingMetaText: {
-    fontSize: 12,
-    textTransform: 'capitalize',
+  liveTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
   },
-  menu: {
-    marginTop: 8,
+  liveDot: { width: 6, height: 6, borderRadius: 3 },
+
+  menuCard: {
+    borderRadius: 20,
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: 'hidden',
   },
   menuItem: {
-    paddingVertical: 16,
-    borderBottomWidth: 1,
-  },
-  menuText: {
-    fontSize: 16,
-  },
-  logoutButton: {
-    paddingVertical: 16,
-    borderRadius: 8,
+    flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 24,
+    gap: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
   },
-  logoutText: {
-    color: 'white',
-    fontSize: 16,
-    fontWeight: '600',
+
+  signOutBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 16,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
   },
 });

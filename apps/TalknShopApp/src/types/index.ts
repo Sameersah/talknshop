@@ -269,6 +269,15 @@ export interface Theme {
     error: string;
     warning: string;
     success: string;
+    // Extended palette for the redesign — optional so legacy code stays valid.
+    primaryHover?: string;
+    primaryMuted?: string;
+    accent?: string;
+    accentMuted?: string;
+    surfaceRaised?: string;
+    surfaceSunk?: string;
+    borderStrong?: string;
+    textTertiary?: string;
   };
   spacing: {
     xs: number;
@@ -283,13 +292,38 @@ export interface Theme {
     h3: TextStyle;
     body: TextStyle;
     caption: TextStyle;
+    // Extended typography — optional so legacy callers compile.
+    display?: TextStyle;
+    bodyMd?: TextStyle;
+    label?: TextStyle;
+    mono?: TextStyle;
+    priceLg?: TextStyle;
   };
   borderRadius: {
     sm: number;
     md: number;
     lg: number;
     xl: number;
+    pill?: number;
   };
+  // Optional extended tokens — only present on the dark redesign theme.
+  gradients?: {
+    aurora: { angle: number; colors: string[]; locations: number[] };
+    whisper: { colors: string[]; locations: number[] };
+    auroraSubtle: { angle: number; colors: string[]; locations: number[] };
+  };
+  elevation?: {
+    e1: object;
+    e2: object;
+    e3: object;
+  };
+  motion?: {
+    fast: number;
+    base: number;
+    slow: number;
+    ambient: number;
+  };
+  space?: Record<number, number>;
 }
 
 // Error Types

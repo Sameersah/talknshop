@@ -4,13 +4,12 @@ import {
   Text,
   StyleSheet,
   ScrollView,
-  TouchableOpacity,
   TextInput,
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -20,27 +19,22 @@ import {
   type AslRecognitionOutcome,
   type AslAlternative,
 } from '@/services/aslService';
-
-/** Matches talknshop-web MessageInput ASL panel accent (teal). */
-const ASL_TEAL = '#14b8a6';
-const ASL_TEAL_MUTED = 'rgba(20, 184, 166, 0.15)';
+import {
+  AuroraOrb,
+  Chip,
+  GradientButton,
+  IconBadge,
+  PressableScale,
+  SectionHeader,
+  WhisperBackground,
+  type OrbState,
+} from '@/components/ui';
 
 function guessMime(uri: string, fileName: string): string {
   const lower = (fileName || uri).toLowerCase();
   if (lower.endsWith('.mov')) return 'video/quicktime';
   if (lower.endsWith('.webm')) return 'video/webm';
   return 'video/mp4';
-}
-
-function aslDebugHint(outcome: AslRecognitionOutcome): string {
-  const parts: string[] = [];
-  if (outcome.decision && outcome.decision !== 'stub') {
-    parts.push(`decision=${outcome.decision}`);
-  }
-  if (typeof outcome.confidence === 'number') {
-    parts.push(`confidence=${outcome.confidence.toFixed(2)}`);
-  }
-  return parts.length ? parts.join(' · ') : 'ASL video recognized';
 }
 
 export default function AslScreen() {
@@ -51,6 +45,8 @@ export default function AslScreen() {
   const [outcome, setOutcome] = useState<AslRecognitionOutcome | null>(null);
   const [manualOverride, setManualOverride] = useState('');
 
+  const orbState: OrbState = busy ? 'listening' : outcome ? 'responding' : 'idle';
+
   const clearOutcome = useCallback(() => {
     setOutcome(null);
     setManualOverride('');
@@ -59,17 +55,17 @@ export default function AslScreen() {
 
   const runPredict = useCallback(async (uri: string, fileName: string) => {
     setBusy(true);
-    setStatus('Uploading and recognizing ASL video…');
+    setStatus('Recognizing sign…');
     setOutcome(null);
     try {
       const mime = guessMime(uri, fileName);
       const result = await recognizeAslVideoFromUri(uri, fileName, mime);
       setOutcome(result);
       setManualOverride('');
-      setStatus(aslDebugHint(result));
+      setStatus(null);
     } catch (e) {
       setOutcome(null);
-      setStatus(e instanceof Error ? e.message : 'ASL recognition failed');
+      setStatus(e instanceof Error ? e.message : 'Recognition failed');
     } finally {
       setBusy(false);
     }
@@ -78,7 +74,7 @@ export default function AslScreen() {
   const pickFromLibrary = async () => {
     const { status: perm } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (perm !== 'granted') {
-      setStatus('Photo library permission is required to upload ASL video.');
+      setStatus('Photo library access is required.');
       return;
     }
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -95,7 +91,7 @@ export default function AslScreen() {
   const recordFromCamera = async () => {
     const { status: cam } = await ImagePicker.requestCameraPermissionsAsync();
     if (cam !== 'granted') {
-      setStatus('Camera permission is required to record ASL video.');
+      setStatus('Camera access is required.');
       return;
     }
     const result = await ImagePicker.launchCameraAsync({
@@ -113,10 +109,7 @@ export default function AslScreen() {
   const confirmText = (text: string) => {
     const t = text.trim();
     if (!t) return;
-    router.push({
-      pathname: '/(tabs)/chat',
-      params: { prefill: t },
-    });
+    router.push({ pathname: '/(tabs)/chat', params: { prefill: t } });
   };
 
   const onPickAlternative = (a: AslAlternative) => {
@@ -127,274 +120,247 @@ export default function AslScreen() {
   const activeTranscript = manualOverride.trim() || outcome?.transcript?.trim() || '';
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]} edges={['top']}>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <WhisperBackground />
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 88 : 0}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
       >
         <ScrollView
           style={styles.flex}
           contentContainerStyle={[
-            styles.scrollContent,
-            { paddingBottom: Math.max(insets.bottom, 12) + 24 },
+            styles.scroll,
+            { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 120 },
           ]}
           keyboardShouldPersistTaps="handled"
         >
+          {/* Back button */}
+          <PressableScale onPress={() => router.back()} haptic="selection" style={styles.backBtn}>
+            <View style={[styles.backInner, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <Ionicons name="chevron-back" size={20} color={colors.text} />
+            </View>
+          </PressableScale>
+
+          {/* Hero */}
           <View style={styles.hero}>
-            <Text style={[styles.heroTitle, { color: colors.text, ...typography.h1 }]}>Sign to shop</Text>
-            <Text style={[styles.heroSubtitle, { color: colors.textSecondary, ...typography.body }]}>
-              Record or upload a clip—we turn your signs into text for Chat.
+            <AuroraOrb size={104} state={orbState} />
+            <Text style={[typography.label, { color: colors.primary, marginTop: 20 }]}>
+              ACCESSIBILITY · ASL
+            </Text>
+            <Text style={[typography.display, { color: colors.text, marginTop: 6, textAlign: 'center' }]}>
+              Sign to shop.
+            </Text>
+            <Text style={[typography.body, { color: colors.textSecondary, marginTop: 8, textAlign: 'center' }]}>
+              Record or upload a sign — we translate it into a search the AI understands.
             </Text>
           </View>
 
-          <View style={[styles.hintCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-            <Text style={[styles.hintTitle, { color: ASL_TEAL }]}>How it works</Text>
-            <Text style={{ color: colors.textSecondary, ...typography.caption, marginTop: 6 }}>
-              Type below or use record / upload for ASL — both work together. After recognition, pick a
-              suggestion or edit the text, then open Chat to search with the assistant.
-            </Text>
-          </View>
-
-          <View style={styles.actionsRow}>
-            <TouchableOpacity
-              style={[
-                styles.actionBtn,
-                { backgroundColor: ASL_TEAL, borderColor: ASL_TEAL },
-                busy && styles.actionBtnDisabled,
-              ]}
-              onPress={recordFromCamera}
-              disabled={busy}
-              activeOpacity={0.85}
-            >
-              <Ionicons name="videocam" size={22} color="#fff" />
-              <Text style={styles.actionBtnText}>Record</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                styles.actionBtn,
-                {
-                  backgroundColor: colors.surface,
-                  borderColor: ASL_TEAL,
-                },
-                busy && styles.actionBtnDisabled,
-              ]}
-              onPress={pickFromLibrary}
-              disabled={busy}
-              activeOpacity={0.85}
-            >
-              <Ionicons name="folder-open" size={22} color={ASL_TEAL} />
-              <Text style={[styles.actionBtnTextOutline, { color: ASL_TEAL }]}>Upload</Text>
-            </TouchableOpacity>
-          </View>
-
-          {busy && (
-            <View style={styles.loadingRow}>
-              <ActivityIndicator color={ASL_TEAL} />
-              <Text style={[styles.loadingLabel, { color: colors.textSecondary }]}>Processing…</Text>
+          {/* Primary actions */}
+          {!outcome ? (
+            <View style={styles.actionsRow}>
+              <PressableScale
+                onPress={recordFromCamera}
+                disabled={busy}
+                haptic="medium"
+                style={{ flex: 1 }}
+              >
+                <View style={[styles.actionTile, { backgroundColor: colors.surface, borderColor: colors.borderStrong ?? colors.border }]}>
+                  <IconBadge icon="videocam-outline" size="md" variant="gradient" />
+                  <Text style={[typography.bodyMd, { color: colors.text, marginTop: 10 }]}>Record</Text>
+                  <Text style={[typography.caption, { color: colors.textTertiary ?? colors.textSecondary }]}>
+                    Use camera
+                  </Text>
+                </View>
+              </PressableScale>
+              <PressableScale
+                onPress={pickFromLibrary}
+                disabled={busy}
+                haptic="selection"
+                style={{ flex: 1 }}
+              >
+                <View style={[styles.actionTile, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                  <IconBadge icon="folder-open-outline" size="md" variant="subtle" />
+                  <Text style={[typography.bodyMd, { color: colors.text, marginTop: 10 }]}>Upload</Text>
+                  <Text style={[typography.caption, { color: colors.textTertiary ?? colors.textSecondary }]}>
+                    From library
+                  </Text>
+                </View>
+              </PressableScale>
             </View>
-          )}
+          ) : null}
 
-          {status && !busy && (
-            <View style={[styles.statusBox, { borderColor: colors.border, backgroundColor: colors.surface }]}>
-              <Text style={{ color: colors.text, ...typography.caption }}>{status}</Text>
+          {/* Status / processing */}
+          {busy ? (
+            <View
+              style={[
+                styles.processingCard,
+                { backgroundColor: colors.surface, borderColor: colors.borderStrong ?? colors.border },
+              ]}
+            >
+              <ActivityIndicator color={colors.primary} />
+              <View style={{ flex: 1 }}>
+                <Text style={[typography.bodyMd, { color: colors.text }]}>Watching your sign…</Text>
+                <Text style={[typography.caption, { color: colors.textSecondary }]}>
+                  This usually takes a couple seconds.
+                </Text>
+              </View>
             </View>
-          )}
+          ) : null}
 
-          {outcome && (
-            <View style={[styles.resultCard, { borderColor: `${ASL_TEAL}66`, backgroundColor: ASL_TEAL_MUTED }]}>
-              <Text style={[styles.resultLabel, { color: colors.textSecondary }]}>Top transcript</Text>
-              <Text style={[styles.transcript, { color: colors.text }]}>&quot;{outcome.transcript}&quot;</Text>
+          {status && !busy ? (
+            <View style={[styles.statusBox, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <Ionicons name="information-circle-outline" size={18} color={colors.textSecondary} />
+              <Text style={[typography.caption, { color: colors.text, flex: 1 }]}>{status}</Text>
+            </View>
+          ) : null}
 
-              {(outcome.alternatives?.length ?? 0) > 0 && (
-                <>
-                  <Text style={[styles.altLabel, { color: colors.textSecondary }]}>Choose a search word</Text>
+          {/* Transcript card */}
+          {outcome ? (
+            <View style={styles.section}>
+              <SectionHeader title="We heard" eyebrow="TRANSCRIPT" />
+              <View
+                style={[
+                  styles.transcriptCard,
+                  { backgroundColor: colors.surfaceRaised ?? colors.surface, borderColor: colors.borderStrong ?? colors.border },
+                ]}
+              >
+                <Text style={[typography.h1, { color: colors.text }]}>
+                  &ldquo;{outcome.transcript}&rdquo;
+                </Text>
+              </View>
+
+              {(outcome.alternatives?.length ?? 0) > 0 ? (
+                <View style={styles.altSection}>
+                  <Text style={[typography.label, { color: colors.textSecondary }]}>OR PICK ANOTHER</Text>
                   <View style={styles.chipWrap}>
                     {outcome.alternatives!.slice(0, 8).map((a, i) => {
                       const label = a.query || a.gloss || `alt_${i}`;
                       return (
-                        <TouchableOpacity
+                        <Chip
                           key={`${label}_${i}`}
-                          style={[styles.chip, { borderColor: ASL_TEAL, backgroundColor: colors.background }]}
+                          label={label}
                           onPress={() => onPickAlternative(a)}
-                        >
-                          <Text style={[styles.chipText, { color: ASL_TEAL }]} numberOfLines={1}>
-                            {label}
-                          </Text>
-                        </TouchableOpacity>
+                          variant="outline"
+                        />
                       );
                     })}
                   </View>
-                </>
-              )}
+                </View>
+              ) : null}
 
-              <Text style={[styles.altLabel, { color: colors.textSecondary }]}>Or type / fix wording</Text>
-              <TextInput
-                value={manualOverride}
-                onChangeText={setManualOverride}
-                placeholder="Override transcript…"
-                placeholderTextColor={colors.textSecondary}
-                style={[
-                  styles.manualInput,
-                  { color: colors.text, borderColor: colors.border, backgroundColor: colors.background },
-                ]}
-              />
+              <View style={styles.altSection}>
+                <Text style={[typography.label, { color: colors.textSecondary }]}>
+                  EDIT WORDING
+                </Text>
+                <View style={[styles.textField, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                  <TextInput
+                    value={manualOverride}
+                    onChangeText={setManualOverride}
+                    placeholder={outcome.transcript}
+                    placeholderTextColor={colors.textTertiary ?? colors.textSecondary}
+                    style={[styles.textInput, { color: colors.text, fontFamily: 'Geist_500Medium' }]}
+                  />
+                </View>
+              </View>
 
-              <View style={styles.resultActions}>
-                <TouchableOpacity
-                  style={[styles.secondaryBtn, { borderColor: colors.border }]}
-                  onPress={clearOutcome}
-                >
-                  <Text style={{ color: colors.text, fontWeight: '600' }}>Clear</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[
-                    styles.primaryMergeBtn,
-                    { backgroundColor: colors.primary, opacity: activeTranscript ? 1 : 0.45 },
-                  ]}
-                  disabled={!activeTranscript}
-                  onPress={() => confirmText(activeTranscript)}
-                >
-                  <Ionicons name="chatbubbles-outline" size={18} color="#fff" />
-                  <Text style={styles.primaryMergeBtnText}>Open Chat with this</Text>
-                </TouchableOpacity>
+              <View style={styles.confirmRow}>
+                <PressableScale onPress={clearOutcome} haptic="selection" style={{ flex: 1 }}>
+                  <View style={[styles.secondaryBtn, { borderColor: colors.borderStrong ?? colors.border }]}>
+                    <Text style={[typography.bodyMd, { color: colors.text }]}>Try again</Text>
+                  </View>
+                </PressableScale>
+                <View style={{ flex: 1.4 }}>
+                  <GradientButton
+                    label="Search with this"
+                    icon="arrow-forward"
+                    size="md"
+                    disabled={!activeTranscript}
+                    onPress={() => confirmText(activeTranscript)}
+                  />
+                </View>
               </View>
             </View>
-          )}
-
-          {!outcome && !busy && (
-            <TouchableOpacity
-              style={[styles.stubNote, { borderColor: colors.border }]}
-              onPress={() =>
-                setStatus(
-                  'Tip: With ASL_USE_STUB=1 the service returns a demo transcript so you can test the UI without a model.'
-                )
-              }
-            >
-              <Ionicons name="information-circle-outline" size={20} color={colors.textSecondary} />
-              <Text style={[styles.stubNoteText, { color: colors.textSecondary }]}>
-                Stub mode returns a sample phrase — check asl-service .env for ASL_USE_STUB.
-              </Text>
-            </TouchableOpacity>
-          )}
+          ) : null}
         </ScrollView>
       </KeyboardAvoidingView>
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
   flex: { flex: 1 },
-  scrollContent: {
-    paddingHorizontal: 16,
-    paddingBottom: 32,
-    gap: 16,
-  },
-  hero: {
-    paddingVertical: 20,
-    alignItems: 'center',
-    marginBottom: 4,
-  },
-  heroTitle: {
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  heroSubtitle: {
-    textAlign: 'center',
-    opacity: 0.85,
-    paddingHorizontal: 12,
-  },
-  hintCard: {
-    borderRadius: 12,
-    borderWidth: 1,
-    padding: 14,
-  },
-  hintTitle: { fontWeight: '700', fontSize: 15 },
-  actionsRow: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  actionBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 14,
-    borderRadius: 12,
-    borderWidth: 1,
-  },
-  actionBtnDisabled: { opacity: 0.55 },
-  actionBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
-  actionBtnTextOutline: { fontWeight: '700', fontSize: 15 },
-  loadingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  loadingLabel: { fontSize: 14 },
-  statusBox: {
-    borderWidth: 1,
-    borderRadius: 10,
-    padding: 12,
-  },
-  resultCard: {
-    borderWidth: 1,
-    borderRadius: 14,
-    padding: 14,
-    gap: 10,
-  },
-  resultLabel: { fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5 },
-  transcript: { fontSize: 17, fontWeight: '600', lineHeight: 24 },
-  altLabel: { fontSize: 12, marginTop: 4 },
-  chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  chip: {
-    borderWidth: 1,
+  scroll: { paddingHorizontal: 20, gap: 24 },
+
+  backBtn: { alignSelf: 'flex-start' },
+  backInner: {
+    width: 40,
+    height: 40,
     borderRadius: 20,
-    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+
+  hero: {
+    alignItems: 'center',
+    gap: 4,
     paddingVertical: 8,
-    maxWidth: '100%',
   },
-  chipText: { fontWeight: '600', fontSize: 13 },
-  manualInput: {
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 16,
+
+  actionsRow: { flexDirection: 'row', gap: 12 },
+  actionTile: {
+    alignItems: 'flex-start',
+    paddingVertical: 18,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: 2,
   },
-  resultActions: {
+
+  processingCard: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 16,
+    borderRadius: 20,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+
+  statusBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 10,
-    marginTop: 8,
-    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
   },
+
+  section: { gap: 12 },
+  transcriptCard: {
+    padding: 22,
+    borderRadius: 24,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  altSection: { gap: 8 },
+  chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+
+  textField: {
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 14,
+  },
+  textInput: { fontSize: 15, paddingVertical: 12 },
+
+  confirmRow: { flexDirection: 'row', gap: 10, marginTop: 4 },
   secondaryBtn: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 10,
-    borderWidth: 1,
-  },
-  primaryMergeBtn: {
-    flexDirection: 'row',
+    paddingVertical: 16,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 10,
-    flexGrow: 1,
     justifyContent: 'center',
   },
-  primaryMergeBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
-  stubNote: {
-    flexDirection: 'row',
-    gap: 10,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderRadius: 12,
-    padding: 12,
-  },
-  stubNoteText: { flex: 1, fontSize: 13, lineHeight: 18 },
 });
